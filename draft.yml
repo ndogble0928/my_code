@@ -1,0 +1,58 @@
+---
+- name: Secure Boot and Platform Key Audit
+  hosts: all  # replace with your CS/CSQ inventory group
+  gather_facts: false
+  vars:
+    report_path: "/tmp/secureboot_report_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
+
+  tasks:
+    - name: Check Secure Boot status
+      ansible.windows.win_shell: |
+        try {
+          $result = Confirm-SecureBootUEFI
+          Write-Output $result
+        } catch {
+          Write-Output "ERROR: $($_.Exception.Message)"
+        }
+      register: secureboot_result
+      ignore_errors: true
+
+    - name: Check Platform Key (2023 cert)
+      ansible.windows.win_shell: |
+        try {
+          $pk = Get-SecureBootUEFI -Name PK
+          $bytes = $pk.Bytes
+          $cert = $bytes[44..($bytes.Length-1)]
+          $tmpFile = "$env:TEMP\PK.der"
+          [IO.File]::WriteAllBytes($tmpFile, $cert)
+          $dump = certutil -dump $tmpFile
+          Remove-Item $tmpFile -Force
+          if ($dump -match "2023") {
+            Write-Output "2023_CERT_FOUND"
+          } else {
+            Write-Output "2023_CERT_NOT_FOUND"
+          }
+        } catch {
+          Write-Output "ERROR: $($_.Exception.Message)"
+        }
+      register: pk_result
+      ignore_errors: true
+
+    - name: Build report line per host
+      ansible.builtin.set_fact:
+        report_line: "{{ inventory_hostname }},{{ secureboot_result.stdout | trim }},{{ pk_result.stdout | trim }}"
+
+  post_tasks:
+    - name: Write CSV header
+      ansible.builtin.lineinfile:
+        path: "{{ report_path }}"
+        line: "Hostname,SecureBoot_Enabled,PK_2023_Cert"
+        create: true
+      delegate_to: localhost
+      run_once: true
+
+    - name: Append each host result to CSV
+      ansible.builtin.lineinfile:
+        path: "{{ report_path }}"
+        line: "{{ report_line }}"
+      delegate_to: localhost

@@ -5,7 +5,20 @@
   vars:
     report_path: "/tmp/secureboot_report_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
 
+
   tasks:
+    - name: Inspect PK bytes
+      ansible.windows.win_shell: |
+        $pk = Get-SecureBootUEFI -Name PK
+        $bytes = $pk.Bytes
+        Write-Output "Total bytes: $($bytes.Length)"
+        Write-Output "First 10 bytes: $($bytes[0..9] -join ', ')"
+      register: pk_inspect
+
+    - name: Display byte info
+      ansible.builtin.debug:
+        var: pk_inspect.stdout_lines
+
     - name: Check Secure Boot status
       ansible.windows.win_shell: |
         try {

@@ -7,6 +7,44 @@
 
 
   tasks:
+    - name: Set report path fact
+      ansible.builtin.set_fact:
+        report_path_virtual: "secureboot_report_virtual_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
+        report_path_physical: "/tmp/secureboot_report_physical_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
+      delegate_to: localhost
+      run_once: true
+    
+    - name: Write report headers
+      ansible.builtin.lineinfile:
+        path: "{{ item }}"
+        line: "Hostname,SecureBoot_Enabled,PK_2023_Cert"
+        create: true
+      delegate_to: localhost
+      run_once: true
+      loop:
+        - "{{ report_path_virtual }}"
+        - "{{ report_path_physical }}"
+
+    - name: Append virtual hosts to report
+      ansible.builtin.lineinfile:
+        path: "{{ report_path_virtual }}"
+        line: "{{ report_line }}"
+        create: true
+      delegate_to: localhost
+      throttle: 1
+      when: ansible_virtualization_role == 'guest'
+
+    - name: Append physical hosts to report
+      ansible.builtin.lineinfile:
+        path: "{{ report_path_physical }}"
+        line: "{{ report_line }}"
+        create: true
+      delegate_to: localhost
+      throttle: 1
+      when: ansible_virtualization_role != 'guest'
+        mail_attach:
+          - "{{ report_path_virtual }}"
+          - "{{ report_path_physical }}"
     - name: Inspect PK bytes
       ansible.windows.win_shell: |
         $pk = Get-SecureBootUEFI -Name PK

@@ -7,6 +7,43 @@
 
 
   tasks:
+- name: Check UEFICA2023Status registry value
+      ansible.windows.win_shell: |
+        try {
+          $val = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing" -Name "UEFICA2023Status" -ErrorAction Stop
+          Write-Output $val.UEFICA2023Status
+        } catch {
+          Write-Output "KEY_NOT_FOUND"
+        }
+      register: registry_result
+      ignore_errors: true
+
+    - name: Check Windows UEFI CA 2023 in db
+      ansible.windows.win_shell: |
+        try {
+          $result = ([System.Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).bytes) -match 'Windows UEFI CA 2023')
+          Write-Output $result
+        } catch {
+          Write-Output "ERROR: $($_.Exception.Message)"
+        }
+      register: db_result
+      ignore_errors: true
+
+- name: Build report line per host
+      ansible.builtin.set_fact:
+        report_line: "{{ inventory_hostname }},{{ secureboot_result.stdout | trim }},{{ pk_result.stdout_lines | last | trim }},{{ 'Virtual' if ansible_virtualization_role == 'guest' else 'Physical' }},{{ registry_result.stdout | trim }},{{ db_result.stdout | trim }}"
+
+
+
+
+line: "Hostname,SecureBoot_Enabled,PK_2023_Cert,Server_Type,UEFICA2023Status,DB_2023_Match"
+
+
+
+
+
+
+      
     - name: Set report path fact
       ansible.builtin.set_fact:
         report_path_virtual: "secureboot_report_virtual_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"

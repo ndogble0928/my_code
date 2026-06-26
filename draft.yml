@@ -1,146 +1,146 @@
 ---
 - name: Secure Boot and Platform Key Audit
-  hosts: all  # replace with your CS/CSQ inventory group
-  gather_facts: false
-  vars:
-    report_path: "/tmp/secureboot_report_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
+ hosts: all
+ gather_facts: true
 
+ pre_tasks:
+   - name: Set report path
+     ansible.builtin.set_fact:
+       report_path: "/tmp/secureboot_report_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
+     delegate_to: localhost
+     run_once: true
 
-  tasks:
-- name: Check UEFICA2023Status registry value
-      ansible.windows.win_shell: |
-        try {
-          $val = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing" -Name "UEFICA2023Status" -ErrorAction Stop
-          Write-Output $val.UEFICA2023Status
-        } catch {
-          Write-Output "KEY_NOT_FOUND"
-        }
-      register: registry_result
-      ignore_errors: true
+ tasks:
+   - name: Check Secure Boot status
+     ansible.windows.win_shell: |
+       try {
+         $result = Confirm-SecureBootUEFI
+         Write-Output $result
+       } catch {
+         Write-Output "ERROR: $($_.Exception.Message)"
+       }
+     register: secureboot_result
+     ignore_errors: true
 
-    - name: Check Windows UEFI CA 2023 in db
-      ansible.windows.win_shell: |
-        try {
-          $result = ([System.Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).bytes) -match 'Windows UEFI CA 2023')
-          Write-Output $result
-        } catch {
-          Write-Output "ERROR: $($_.Exception.Message)"
-        }
-      register: db_result
-      ignore_errors: true
+   - name: Check Platform Key (2023 cert)
+     ansible.windows.win_shell: |
+       try {
+         $pk = Get-SecureBootUEFI -Name PK
+         $bytes = $pk.Bytes
+         $cert = $bytes[44..($bytes.Length-1)]
+         $tmpFile = "$env:TEMP\PK.der"
+         [IO.File]::WriteAllBytes($tmpFile, $cert)
+         $dump = certutil -dump $tmpFile
+         Write-Output ($dump -join "`n")
+         Remove-Item $tmpFile -Force
+         if ($dump -match "2023") {
+           Write-Output "2023_CERT_FOUND"
+         } else {
+           Write-Output "2023_CERT_NOT_FOUND"
+         }
+       } catch {
+         Write-Output "ERROR: $($_.Exception.Message)"
+       }
+     register: pk_result
+     ignore_errors: true
 
-- name: Build report line per host
-      ansible.builtin.set_fact:
-        report_line: "{{ inventory_hostname }},{{ secureboot_result.stdout | trim }},{{ pk_result.stdout_lines | last | trim }},{{ 'Virtual' if ansible_virtualization_role == 'guest' else 'Physical' }},{{ registry_result.stdout | trim }},{{ db_result.stdout | trim }}"
+   - name: Check UEFICA2023Status registry value
+     ansible.windows.win_reg_stat:
+       path: HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing
+       name: UEFICA2023Status
+     register: registry_result
+     ignore_errors: true
 
+   - name: Build registry result fact
+     ansible.builtin.set_fact:
+       uefica_status: "{{ registry_result.value if registry_result.exists else 'KEY_NOT_FOUND' }}"
 
+   - name: Check KEK 2023 cert
+     ansible.windows.win_shell: |
+       try {
+         $result = ([System.Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI kek).bytes) -match 'Microsoft Corporation KEK 2K CA 2023')
+         Write-Output $result
+       } catch {
+         Write-Output "ERROR: $($_.Exception.Message)"
+       }
+     register: kek_result
+     ignore_errors: true
 
+   - name: Check DB Windows UEFI CA 2023
+     ansible.windows.win_shell: |
+       try {
+         $result = ([System.Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).bytes) -match 'Windows UEFI CA 2023')
+         Write-Output $result
+       } catch {
+         Write-Output "ERROR: $($_.Exception.Message)"
+       }
+     register: db_windows_result
+     ignore_errors: true
 
-line: "Hostname,SecureBoot_Enabled,PK_2023_Cert,Server_Type,UEFICA2023Status,DB_2023_Match"
+   - name: Check DB Microsoft UEFI CA 2023
+     ansible.windows.win_shell: |
+       try {
+         $result = ([System.Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).bytes) -match 'Microsoft UEFI CA 2023')
+         Write-Output $result
+       } catch {
+         Write-Output "ERROR: $($_.Exception.Message)"
+       }
+     register: db_microsoft_result
+     ignore_errors: true
 
+   - name: Check DB Microsoft Option ROM UEFI CA 2023
+     ansible.windows.win_shell: |
+       try {
+         $result = ([System.Text.Encoding]::ASCII.GetString((Get-SecureBootUEFI db).bytes) -match 'Microsoft Option ROM UEFI CA 2023')
+         Write-Output $result
+       } catch {
+         Write-Output "ERROR: $($_.Exception.Message)"
+       }
+     register: db_optrom_result
+     ignore_errors: true
 
+   - name: Print command output
+     ansible.builtin.debug:
+       var: pk_result.stdout_lines
 
+   - name: Build report line per host
+     ansible.builtin.set_fact:
+       report_line: "{{ inventory_hostname }},{{ secureboot_result.stdout | trim }},{{ pk_result.stdout_lines | last | trim }},{{ 'Virtual' if ansible_virtualization_role == 'guest' else 'Physical' }},{{ uefica_status }},{{ kek_result.stdout | trim }},{{ db_windows_result.stdout | trim }},{{ db_microsoft_result.stdout | trim }},{{ db_optrom_result.stdout | trim }}"
 
+   - name: Write CSV header
+     ansible.builtin.lineinfile:
+       path: "{{ report_path }}"
+       line: "Hostname,SecureBoot_Enabled,PK_2023_Cert,Server_Type,UEFICA2023Status,KEK_2K_CA_2023,DB_Windows_UEFI_CA_2023,DB_Microsoft_UEFI_CA_2023,DB_Option_ROM_UEFI_CA_2023"
+       create: true
+     delegate_to: localhost
+     run_once: true
 
+   - name: Append each host result to CSV
+     ansible.builtin.lineinfile:
+       path: "{{ report_path }}"
+       line: "{{ report_line }}"
+       create: true
+     delegate_to: localhost
+     throttle: 1
 
-      
-    - name: Set report path fact
-      ansible.builtin.set_fact:
-        report_path_virtual: "secureboot_report_virtual_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
-        report_path_physical: "/tmp/secureboot_report_physical_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.csv"
-      delegate_to: localhost
-      run_once: true
-    
-    - name: Write report headers
-      ansible.builtin.lineinfile:
-        path: "{{ item }}"
-        line: "Hostname,SecureBoot_Enabled,PK_2023_Cert"
-        create: true
-      delegate_to: localhost
-      run_once: true
-      loop:
-        - "{{ report_path_virtual }}"
-        - "{{ report_path_physical }}"
+ post_tasks:
+   - name: Include fact role
+     ansible.builtin.include_role:
+       name: itio_co_ansible.general.facts
+     run_once: true
 
-    - name: Append virtual hosts to report
-      ansible.builtin.lineinfile:
-        path: "{{ report_path_virtual }}"
-        line: "{{ report_line }}"
-        create: true
-      delegate_to: localhost
-      throttle: 1
-      when: ansible_virtualization_role == 'guest'
+   - name: Show report
+     ansible.builtin.debug:
+       msg: "{{ lookup('file', report_path) }}"
+     delegate_to: localhost
+     run_once: true
 
-    - name: Append physical hosts to report
-      ansible.builtin.lineinfile:
-        path: "{{ report_path_physical }}"
-        line: "{{ report_line }}"
-        create: true
-      delegate_to: localhost
-      throttle: 1
-      when: ansible_virtualization_role != 'guest'
-        mail_attach:
-          - "{{ report_path_virtual }}"
-          - "{{ report_path_physical }}"
-    - name: Inspect PK bytes
-      ansible.windows.win_shell: |
-        $pk = Get-SecureBootUEFI -Name PK
-        $bytes = $pk.Bytes
-        Write-Output "Total bytes: $($bytes.Length)"
-        Write-Output "First 10 bytes: $($bytes[0..9] -join ', ')"
-      register: pk_inspect
-
-    - name: Display byte info
-      ansible.builtin.debug:
-        var: pk_inspect.stdout_lines
-
-    - name: Check Secure Boot status
-      ansible.windows.win_shell: |
-        try {
-          $result = Confirm-SecureBootUEFI
-          Write-Output $result
-        } catch {
-          Write-Output "ERROR: $($_.Exception.Message)"
-        }
-      register: secureboot_result
-      ignore_errors: true
-
-    - name: Check Platform Key (2023 cert)
-      ansible.windows.win_shell: |
-        try {
-          $pk = Get-SecureBootUEFI -Name PK
-          $bytes = $pk.Bytes
-          $cert = $bytes[44..($bytes.Length-1)]
-          $tmpFile = "$env:TEMP\PK.der"
-          [IO.File]::WriteAllBytes($tmpFile, $cert)
-          $dump = certutil -dump $tmpFile
-          Remove-Item $tmpFile -Force
-          if ($dump -match "2023") {
-            Write-Output "2023_CERT_FOUND"
-          } else {
-            Write-Output "2023_CERT_NOT_FOUND"
-          }
-        } catch {
-          Write-Output "ERROR: $($_.Exception.Message)"
-        }
-      register: pk_result
-      ignore_errors: true
-
-    - name: Build report line per host
-      ansible.builtin.set_fact:
-        report_line: "{{ inventory_hostname }},{{ secureboot_result.stdout | trim }},{{ pk_result.stdout | trim }}"
-
-  post_tasks:
-    - name: Write CSV header
-      ansible.builtin.lineinfile:
-        path: "{{ report_path }}"
-        line: "Hostname,SecureBoot_Enabled,PK_2023_Cert"
-        create: true
-      delegate_to: localhost
-      run_once: true
-
-    - name: Append each host result to CSV
-      ansible.builtin.lineinfile:
-        path: "{{ report_path }}"
-        line: "{{ report_line }}"
-      delegate_to: localhost
+   - name: Send report notification email
+     ansible.builtin.include_role:
+       name: itio_co_ansible.general.mail
+     vars:
+       mail_subject: "ITIO CO - Secure Boot Audit Report - {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+       mail_attach:
+         - "{{ report_path }}"
+       mail_to: nico.a.dogble@dominionenergy.com
+     run_once: true

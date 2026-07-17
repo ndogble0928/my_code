@@ -1,0 +1,107 @@
+Step 1 Copy the cert from from \\local\flexnetdfs\Windows Hardening\Certs\Local\2026-2027\local.flexnet.net.p12. to the local system 
+
+Step 2 Install and Apply Cert to RDP
+
+$ErrorActionPreference = "Stop"
+
+$PfxPath = "C:\Temp\local.flexnet.net.p12"
+$Password = '$eNsus33'
+
+# New cert thumbprint
+$ExpectedThumbprint = "62B55B3810DB48E6BB965A9AC909069FF9C8AB9C"
+$ExpectedThumbprint = $ExpectedThumbprint -replace '[^a-fA-F0-9]', ''
+$ExpectedThumbprint = $ExpectedThumbprint.ToUpper()
+
+if (-not (Test-Path $PfxPath)) {
+    throw "PFX file not found: $PfxPath"
+}
+
+Write-Output "Importing PFX..."
+& certutil.exe -f -p $Password -importPFX My $PfxPath AT_KEYEXCHANGE
+
+if ($LASTEXITCODE -ne 0) {
+    throw "certutil import failed with exit code $LASTEXITCODE. Cert was not imported successfully."
+}
+
+$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+    $_.Thumbprint -eq $ExpectedThumbprint
+}
+
+if (-not $cert) {
+    throw "Expected new certificate $ExpectedThumbprint was not found in Cert:\LocalMachine\My after import."
+}
+
+if (-not $cert.HasPrivateKey) {
+    throw "Expected new certificate $ExpectedThumbprint was found, but it does not have a private key."
+}
+
+$Thumbprint = $cert.Thumbprint.ToUpper()
+
+Write-Output "Using NEW certificate:"
+Write-Output "Thumbprint: $Thumbprint"
+Write-Output "Subject: $($cert.Subject)"
+Write-Output "Expires: $($cert.NotAfter)"
+Write-Output "Has private key: $($cert.HasPrivateKey)"
+
+Set-WmiInstance `
+    -Namespace "root\cimv2\terminalservices" `
+    -Path "Win32_TSGeneralSetting.TerminalName='RDP-tcp'" `
+    -Argument @{ SSLCertificateSHA1Hash = $Thumbprint }
+
+Write-Output "RDP certificate assigned successfully.”
+
+Step 3 Create file on C:\Temp
+
+# Create a blank file to prevent this PS from applying the certificate to RDP a second time (will break RDP otherwise)
+New-Item -Path "C:\Temp\RDP256Cert2026.txt" -ItemType File -Force
+
+Step 4 Add Network Services Account to Cert Read Only
+
+$Thumbprint = "62B55B3810DB48E6BB965A9AC909069FF9C8AB9C"
+
+$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+    $_.Thumbprint -eq $Thumbprint
+}
+
+if (-not $cert) {
+    throw "Certificate $Thumbprint not found in LocalMachine\My"
+}
+
+$keyName = $cert.PrivateKey.CspKeyContainerInfo.UniqueKeyContainerName
+$keyPath = "C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\$keyName"
+
+if (-not (Test-Path $keyPath)) {
+    throw "Private key file not found: $keyPath"
+}
+
+Write-Output "Granting NETWORK SERVICE read access to:"
+Write-Output $keyPath
+
+icacls $keyPath /grant "*S-1-5-20:R"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "icacls failed with exit code $LASTEXITCODE"
+}
+
+Step 5 Restart Terminal Services
+
+Restart-Service -f termservice
+
+Step 6 Delete Old Thumbprint from Cert Store
+
+$OldThumbprint = "aa1bfe4d1756e27cbba0df15a1432bd5ab5f9c2a"
+
+# Clean/normalize the thumbprint
+$OldThumbprint = $OldThumbprint -replace '[^a-fA-F0-9]', ''
+$OldThumbprint = $OldThumbprint.ToUpper()
+
+$certPath = "Cert:\LocalMachine\My\$OldThumbprint"
+
+if (Test-Path $certPath) {
+    Write-Output "Deleting old certificate with thumbprint $OldThumbprint"
+    Remove-Item -Path $certPath -Force
+    Write-Output "Old certificate deleted."
+}
+else {
+    Write-Output "Old certificate $OldThumbprint not found. Nothing to delete."
+}

@@ -1,0 +1,88 @@
+plugin: ansible.builtin.constructed
+strict: false
+
+compose:
+  # One shared regex, repeated inline in every expression since compose vars
+  # cannot reference each other. Verbose, but each line is fully self-contained.
+  gms_name: "inventory_hostname.split('.')[0] | lower"
+
+  gms_valid: >-
+    (inventory_hostname.split('.')[0] | lower)
+    is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$')
+
+  gms_site_code: >-
+    (inventory_hostname.split('.')[0] | lower)[0:3]
+    if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+    else 'unknown'
+
+  gms_env_code: >-
+    (inventory_hostname.split('.')[0] | lower)[3:4]
+    if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+    else 'unknown'
+
+  gms_os_code: >-
+    (inventory_hostname.split('.')[0] | lower)[4:5]
+    if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+    else 'unknown'
+
+  gms_role_code: >-
+    (inventory_hostname.split('.')[0] | lower)[8:12]
+    if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+    else 'unknown'
+
+  gms_cluster_num: >-
+    (inventory_hostname.split('.')[0] | lower)[12:15]
+    if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+    else 'unknown'
+
+  gms_environment: >-
+    {
+      'p': 'prod', 'q': 'qa', 'd': 'dev'
+    }.get(
+      (inventory_hostname.split('.')[0] | lower)[3:4]
+      if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+      else 'unknown',
+      'unknown'
+    )
+
+  gms_os: >-
+    {
+      'w': 'windows', 'l': 'linux'
+    }.get(
+      (inventory_hostname.split('.')[0] | lower)[4:5]
+      if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+      else 'unknown',
+      'unknown'
+    )
+
+  gms_role_name: >-
+    {
+      'dafp': 'dac', 'iccp': 'iccp', 'pixp': 'pi', 'chrs': 'chronus',
+      'webp': 'web', 'osim': 'ots', 'pddv': 'pds', 'deve': 'dev',
+      'sand': 'sand', 'otch': 'ots_chronus', 'pdch': 'pds_chronus'
+    }.get(
+      (inventory_hostname.split('.')[0] | lower)[8:12]
+      if ((inventory_hostname.split('.')[0] | lower) is match('^(inb|ric)[pqd][wl]agm(dafp|iccp|pixp|chrs|webp|osim|pddv|deve|sand|otch|pdch)[0-9]{2}v$'))
+      else 'unknown',
+      'unknown'
+    )
+
+keyed_groups:
+  - key: gms_site_code
+    prefix: site
+    separator: "_"
+  - key: gms_environment
+    prefix: env
+    separator: "_"
+  - key: gms_os
+    prefix: os
+    separator: "_"
+  - key: gms_role_name
+    prefix: role
+    separator: "_"
+  - key: gms_cluster_num
+    prefix: role_cluster_num
+    separator: "_"
+
+groups:
+  gms_unclassified: "not gms_valid"

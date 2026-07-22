@@ -1,0 +1,137 @@
+---
+# Deploy new RDP listener certificate, grant NETWORK SERVICE key access, retire old cert.
+#
+# Requires: ansible.windows collection (ansible-galaxy collection install ansible.windows)
+# WinRM auth must support credential delegation for the PFX import step
+# (CredSSP/Kerberos-with-delegation, or run with become) — see win_certificate_store notes.
+#
+# Secrets: do NOT hardcode pfx_password. Put it in a vaulted vars file, e.g.:
+#   group_vars/rdp_hosts/vault.yml  (ansible-vault encrypt group_vars/rdp_hosts/vault.yml)
+#     vault_pfx_password: '$eNsus33'
+# and run with --ask-vault-pass / a vault password file.
+
+- name: Deploy RDP listener certificate
+  hosts: rdp_hosts
+  gather_facts: false
+
+  vars:
+    unc_cert_source: '\\local\flexnetdfs\Windows Hardening\Certs\Local\2026-2027\local.flexnet.net.p12'
+    local_pfx_path: 'C:\Temp\local.flexnet.net.p12'
+    pfx_password: "{{ vault_pfx_password }}"
+    new_thumbprint: "62B55B3810DB48E6BB965A9AC909069FF9C8AB9C"
+    old_thumbprint: "AA1BFE4D1756E27CBBA0DF15A1432BD5AB5F9C2A"
+    marker_file: 'C:\Temp\RDP256Cert2026.txt'
+
+  tasks:
+
+    # Guard: if the marker file from Step 3 already exists, skip everything below.
+    # This is what stops the cert from being re-applied to RDP a second time.
+    - name: Check for idempotency marker (prevents re-applying and breaking RDP)
+      ansible.windows.win_stat:
+        path: "{{ marker_file }}"
+      register: marker
+
+    - name: Run cert deployment
+      when: not marker.stat.exists
+      block:
+
+        # Step 1a: make sure the local destination folder exists before copying into it.
+        - name: Ensure C:\Temp exists
+          ansible.windows.win_file:
+            path: 'C:\Temp'
+            state: directory
+
+        # Step 1: copy the cert from the DFS share to the local system.
+        # win_copy with remote_src handles this natively — the target host resolves the UNC
+        # path itself (same as Copy-Item would), and the module skips the copy on its own if
+        # the destination checksum already matches, so no manual creates: check is needed.
+        - name: Copy PFX from DFS share to local disk
+          ansible.windows.win_copy:
+            src: "{{ unc_cert_source }}"
+            dest: "{{ local_pfx_path }}"
+            remote_src: true
+
+        # Step 2a: import the PFX into the LocalMachine\My store (replaces certutil -importPFX).
+        - name: Import PFX into LocalMachine\My
+          ansible.windows.win_certificate_store:
+            path: "{{ local_pfx_path }}"
+            password: "{{ pfx_password }}"
+            state: present
+            store_location: LocalMachine
+            store_name: My
+            key_storage: machine
+            key_exportable: false
+          register: cert_import
+
+        # Step 2b: confirm the new cert landed and has a private key
+        # (replaces the Get-ChildItem/HasPrivateKey checks and throws in the original).
+        - name: Verify expected certificate is present with a private key
+          ansible.windows.win_certificate_info:
+            thumbprint: "{{ new_thumbprint }}"
+            store_location: LocalMachine
+            store_name: My
+          register: cert_check
+          failed_when: >
+            (cert_check.certificates | length == 0) or
+            (not cert_check.certificates[0].has_private_key)
+
+        # Step 2c: bind the new cert to the RDP listener.
+        # No module (ansible.windows or community.windows) wraps Win32_TSGeneralSetting /
+        # Set-WmiInstance — confirmed nothing exists for RDP listener cert binding, only
+        # win_iis_webbinding for IIS. This has to be ad-hoc PowerShell either way, so it uses
+        # win_powershell (the modern, structured replacement for win_shell) rather than raw
+        # win_shell: it gives real failure detection on thrown/terminating errors instead of
+        # relying on exit-code/stderr parsing.
+        - name: Bind certificate to RDP listener
+          ansible.windows.win_powershell:
+            error_action: stop
+            script: |
+              Set-WmiInstance -Namespace "root\cimv2\terminalservices" `
+                -Path "Win32_TSGeneralSetting.TerminalName='RDP-tcp'" `
+                -Argument @{ SSLCertificateSHA1Hash = "{{ new_thumbprint }}" }
+
+        # Step 4a: resolve the private key's file path on disk, needed for the ACL grant below.
+        # win_certificate_info does not expose the CSP/CNG key container name or file path
+        # (checked its return values — only cert metadata, no key storage details), so this
+        # also has no module equivalent and stays as ad-hoc PowerShell via win_powershell.
+        - name: Locate private key container path
+          ansible.windows.win_powershell:
+            error_action: stop
+            script: |
+              $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Thumbprint -eq '{{ new_thumbprint }}' }
+              $keyName = $cert.PrivateKey.CspKeyContainerInfo.UniqueKeyContainerName
+              "C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\$keyName"
+          register: key_path
+          changed_when: false
+
+        # Step 4: grant NETWORK SERVICE (S-1-5-20) read access to the private key (replaces icacls).
+        # win_powershell returns script output as a list under `.output`, not `.stdout`
+        # (that's a win_shell/win_command-ism) — the path is the single item returned.
+        - name: Grant NETWORK SERVICE read access to the private key
+          ansible.windows.win_acl:
+            path: "{{ key_path.output[0] }}"
+            user: "NT AUTHORITY\\NETWORK SERVICE"
+            rights: Read
+            type: allow
+            state: present
+
+        # Step 5: restart Terminal Services so the new binding/permissions take effect.
+        - name: Restart Terminal Services
+          ansible.windows.win_service:
+            name: TermService
+            state: restarted
+            force_dependent_services: true
+
+        # Step 3: create the marker file so this whole block is skipped on future runs.
+        - name: Create idempotency marker file
+          ansible.windows.win_file:
+            path: "{{ marker_file }}"
+            state: touch
+
+        # Step 6: delete the old certificate now that the new one is fully in place.
+        - name: Remove old certificate
+          ansible.windows.win_certificate_store:
+            thumbprint: "{{ old_thumbprint }}"
+            store_location: LocalMachine
+            store_name: My
+            state: absent

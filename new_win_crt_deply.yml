@@ -1,24 +1,53 @@
 ---
 # Deploy new RDP listener certificate, grant NETWORK SERVICE key access, retire old cert.
 #
+# The PFX now lives on a separate Linux cert-management server, not a Windows DFS share, so
+# this is a three-play file:
+#   1. Pull the PFX from the Linux cert-mgmt host down to the Ansible control node.
+#   2. Push it from the control node to each Windows RDP host and deploy it.
+#   3. Delete the fetched copy off the control node (it's a password-protected private key,
+#      no reason to leave it sitting on the controller's disk after the run).
+#
 # Requires: ansible.windows collection (ansible-galaxy collection install ansible.windows)
-# WinRM auth must support credential delegation for the PFX import step
-# (CredSSP/Kerberos-with-delegation, or run with become) — see win_certificate_store notes.
+# on the control node. Play 1 needs SSH access to the cert-mgmt host, and since the source
+# path is under /root/, it needs become: true (root-owned files aren't SSH-user-readable
+# otherwise).
+# WinRM auth must support credential delegation for the PFX import step specifically
+# (CredSSP/Kerberos-with-delegation, or run with become on the Windows play) — importing a
+# password-protected PKCS12 over WinRM hits the same restriction regardless of where the file
+# came from. See the win_certificate_store module notes.
 #
 # Secrets: do NOT hardcode pfx_password. Put it in a vaulted vars file, e.g.:
 #   group_vars/rdp_hosts/vault.yml  (ansible-vault encrypt group_vars/rdp_hosts/vault.yml)
 #     vault_pfx_password: '$eNsus33'
 # and run with --ask-vault-pass / a vault password file.
 
+- name: Fetch PFX from certificate management server
+  hosts: certmgr_hosts
+  gather_facts: false
+  become: true
+
+  vars:
+    remote_pfx_path: /root/certmgr/certs/local.flexnet.net/local.flexnet.net.p12
+    fetched_pfx_path: /tmp/ansible-fetched-certs/local.flexnet.net.p12
+
+  tasks:
+    - name: Fetch the PFX down to the control node
+      ansible.builtin.fetch:
+        src: "{{ remote_pfx_path }}"
+        dest: "{{ fetched_pfx_path }}"
+        flat: true
+
 - name: Deploy RDP listener certificate
   hosts: rdp_hosts
   gather_facts: false
 
   vars:
-    unc_cert_source: '\\local\flexnetdfs\Windows Hardening\Certs\Local\2026-2027\local.flexnet.net.p12'
+    fetched_pfx_path: /tmp/ansible-fetched-certs/local.flexnet.net.p12
     local_pfx_path: 'C:\Temp\local.flexnet.net.p12'
     pfx_password: "{{ vault_pfx_password }}"
-    new_thumbprint: "62B55B3810DB48E6BB965A9AC909069FF9C8AB9C"
+    # new_thumbprint is not hardcoded — it's derived from the PFX itself after import
+    # (see Step 2b/2c below), so this playbook works with any PFX you point it at.
     old_thumbprint: "AA1BFE4D1756E27CBBA0DF15A1432BD5AB5F9C2A"
     marker_file: 'C:\Temp\RDP256Cert2026.txt'
 
@@ -41,15 +70,13 @@
             path: 'C:\Temp'
             state: directory
 
-        # Step 1: copy the cert from the DFS share to the local system.
-        # win_copy with remote_src handles this natively — the target host resolves the UNC
-        # path itself (same as Copy-Item would), and the module skips the copy on its own if
-        # the destination checksum already matches, so no manual creates: check is needed.
-        - name: Copy PFX from DFS share to local disk
+        # Step 1: push the PFX from the control node (where Play 1 fetched it) to the
+        # Windows host. No remote_src here — unlike the old DFS-share version, the source
+        # file now lives on the control node, not somewhere the Windows host can reach itself.
+        - name: Copy PFX from control node to local disk
           ansible.windows.win_copy:
-            src: "{{ unc_cert_source }}"
+            src: "{{ fetched_pfx_path }}"
             dest: "{{ local_pfx_path }}"
-            remote_src: true
 
         # Step 2a: import the PFX into the LocalMachine\My store (replaces certutil -importPFX).
         - name: Import PFX into LocalMachine\My
@@ -63,19 +90,42 @@
             key_exportable: false
           register: cert_import
 
-        # Step 2b: confirm the new cert landed and has a private key
-        # (replaces the Get-ChildItem/HasPrivateKey checks and throws in the original).
-        - name: Verify expected certificate is present with a private key
+        # Step 2b: win_certificate_store returns the thumbprint(s) of everything the PFX
+        # touched (win_certificate_store.thumbprints). A PFX can contain more than just the
+        # leaf cert (e.g. an intermediate in the chain), so look up details on each thumbprint
+        # rather than assuming the list has exactly one entry.
+        - name: Get details of every certificate the import touched
           ansible.windows.win_certificate_info:
-            thumbprint: "{{ new_thumbprint }}"
+            thumbprint: "{{ item }}"
             store_location: LocalMachine
             store_name: My
-          register: cert_check
-          failed_when: >
-            (cert_check.certificates | length == 0) or
-            (not cert_check.certificates[0].has_private_key)
+          register: cert_import_info
+          loop: "{{ cert_import.thumbprints }}"
+          loop_control:
+            label: "{{ item }}"
 
-        # Step 2c: bind the new cert to the RDP listener.
+        # Step 2c: pick out the one cert from the import that actually has a private key —
+        # that's the leaf/RDP cert, as opposed to any intermediate CA cert also in the PFX —
+        # and fail with a clear message if there isn't exactly one (replaces the original's
+        # "not found" / "no private key" throws, now derived rather than hardcoded).
+        - name: Identify the certificate with a private key
+          ansible.builtin.set_fact:
+            private_key_certs: "{{ cert_import_info.results | map(attribute='certificates') | map('first') | selectattr('has_private_key') | map(attribute='thumbprint') | list }}"
+
+        - name: Verify exactly one certificate with a private key was imported
+          ansible.builtin.assert:
+            that:
+              - private_key_certs | length == 1
+            fail_msg: >-
+              Expected exactly one certificate with a private key from {{ local_pfx_path }},
+              found {{ private_key_certs | length }}: {{ private_key_certs }}
+            success_msg: "Using certificate {{ private_key_certs[0] }}"
+
+        - name: Set the deployed certificate's thumbprint
+          ansible.builtin.set_fact:
+            new_thumbprint: "{{ private_key_certs[0] }}"
+
+        # Step 2d: bind the new cert to the RDP listener.
         # No module (ansible.windows or community.windows) wraps Win32_TSGeneralSetting /
         # Set-WmiInstance — confirmed nothing exists for RDP listener cert binding, only
         # win_iis_webbinding for IIS. This has to be ad-hoc PowerShell either way, so it uses
@@ -135,3 +185,19 @@
             store_location: LocalMachine
             store_name: My
             state: absent
+
+- name: Clean up fetched PFX from the control node
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    fetched_pfx_path: /tmp/ansible-fetched-certs/local.flexnet.net.p12
+
+  tasks:
+    # Runs regardless of whether Play 2 deployed anything (the marker guard may have
+    # skipped it) — Play 1 always fetches, so this always has something to clean up.
+    - name: Remove the fetched PFX from the control node
+      ansible.builtin.file:
+        path: "{{ fetched_pfx_path }}"
+        state: absent

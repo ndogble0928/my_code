@@ -1,60 +1,54 @@
 ---
-# Deploy new RDP listener certificate, grant NETWORK SERVICE key access, retire old cert.
+# Deploy an RDP listener certificate, grant NETWORK SERVICE key access, retire the old cert.
 #
-# The PFX now lives on a separate Linux cert-management server, not a Windows DFS share, so
-# this is a three-play file:
-#   1. Pull the PFX from the Linux cert-mgmt host down to the Ansible control node.
-#   2. Push it from the control node to each Windows RDP host and deploy it.
-#   3. Delete the fetched copy off the control node (it's a password-protected private key,
-#      no reason to leave it sitting on the controller's disk after the run).
+# Generic across hosts and certs: each host in rdp_hosts supplies its own `cert_name` and its
+# own vaulted `vault_pfx_password`, so one playbook run can deploy a different cert to every
+# host. The PFX lives on a Linux cert-management server at:
+#   {{ remote_pfx_root }}/{{ cert_name }}/{{ cert_name }}.p12
+# fetched on demand for each host via delegate_to — no separate "fetch play" or hardcoded
+# per-cert paths.
 #
-# Requires: ansible.windows collection (ansible-galaxy collection install ansible.windows)
-# on the control node. Play 1 needs SSH access to the cert-mgmt host, and since the source
-# path is under /root/, it needs become: true (root-owned files aren't SSH-user-readable
-# otherwise).
+# Per-host configuration you need to provide (inventory / host_vars):
+#   host_vars/<windows_host>.yml:
+#     cert_name: local.flexnet.net
+#   host_vars/<windows_host>/vault.yml  (ansible-vault encrypt):
+#     vault_pfx_password: '$eNsus33'
+#
+# Group-level configuration (group_vars/rdp_hosts.yml or similar):
+#   certmgr_host: certmgr01          # inventory name of the Linux cert-mgmt server
+#   remote_pfx_root: /root/certmgr/certs
+#
+# Requires: ansible.windows collection (ansible-galaxy collection install ansible.windows).
+# The fetch task delegates to certmgr_host over SSH and needs become: true there, since the
+# source path is under /root/.
 # WinRM auth must support credential delegation for the PFX import step specifically
 # (CredSSP/Kerberos-with-delegation, or run with become on the Windows play) — importing a
-# password-protected PKCS12 over WinRM hits the same restriction regardless of where the file
+# password-protected PKCS12 over WinRM hits this restriction regardless of where the file
 # came from. See the win_certificate_store module notes.
 #
-# Secrets: do NOT hardcode pfx_password. Put it in a vaulted vars file, e.g.:
-#   group_vars/rdp_hosts/vault.yml  (ansible-vault encrypt group_vars/rdp_hosts/vault.yml)
-#     vault_pfx_password: '$eNsus33'
-# and run with --ask-vault-pass / a vault password file.
-
-- name: Fetch PFX from certificate management server
-  hosts: certmgr_hosts
-  gather_facts: false
-  become: true
-
-  vars:
-    remote_pfx_path: /root/certmgr/certs/local.flexnet.net/local.flexnet.net.p12
-    fetched_pfx_path: /tmp/ansible-fetched-certs/local.flexnet.net.p12
-
-  tasks:
-    - name: Fetch the PFX down to the control node
-      ansible.builtin.fetch:
-        src: "{{ remote_pfx_path }}"
-        dest: "{{ fetched_pfx_path }}"
-        flat: true
+# Neither the old nor the new certificate's thumbprint is hardcoded. Both are read at
+# runtime right after the PFX copy: the old one from the registry (whatever RDP-Tcp is
+# currently bound to), the new one straight from the PFX file on disk.
 
 - name: Deploy RDP listener certificate
   hosts: rdp_hosts
   gather_facts: false
 
   vars:
-    fetched_pfx_path: /tmp/ansible-fetched-certs/local.flexnet.net.p12
-    local_pfx_path: 'C:\Temp\local.flexnet.net.p12'
+    certmgr_host: certmgr01
+    remote_pfx_root: /root/certmgr/certs
+    remote_pfx_path: "{{ remote_pfx_root }}/{{ cert_name }}/{{ cert_name }}.p12"
+    # Per-host fetch path (keyed by inventory_hostname) so multiple hosts running in the same
+    # play don't clobber each other's copy on the control node.
+    fetched_pfx_path: "/tmp/ansible-fetched-certs/{{ inventory_hostname }}/{{ cert_name }}.p12"
+    local_pfx_path: 'C:\Temp\{{ cert_name }}.p12'
     pfx_password: "{{ vault_pfx_password }}"
-    # new_thumbprint is not hardcoded — it's derived from the PFX itself after import
-    # (see Step 2b/2c below), so this playbook works with any PFX you point it at.
-    old_thumbprint: "AA1BFE4D1756E27CBBA0DF15A1432BD5AB5F9C2A"
     marker_file: 'C:\Temp\RDP256Cert2026.txt'
 
   tasks:
 
-    # Guard: if the marker file from Step 3 already exists, skip everything below.
-    # This is what stops the cert from being re-applied to RDP a second time.
+    # Guard: if the marker file from Step 3 already exists, skip everything below — including
+    # the fetch, so a host that's already deployed doesn't even pull the PFX down again.
     - name: Check for idempotency marker (prevents re-applying and breaking RDP)
       ansible.windows.win_stat:
         path: "{{ marker_file }}"
@@ -70,13 +64,68 @@
             path: 'C:\Temp'
             state: directory
 
-        # Step 1: push the PFX from the control node (where Play 1 fetched it) to the
-        # Windows host. No remote_src here — unlike the old DFS-share version, the source
-        # file now lives on the control node, not somewhere the Windows host can reach itself.
+        # Step 1a: pull this host's cert down to the control node. delegate_to switches the
+        # connection for just this task to the Linux cert-mgmt host, while remote_pfx_path/
+        # fetched_pfx_path still resolve using *this* Windows host's own cert_name — so each
+        # host in the play fetches its own cert without any separate per-cert play.
+        - name: Fetch this host's PFX from the certificate management server
+          delegate_to: "{{ certmgr_host }}"
+          become: true
+          ansible.builtin.fetch:
+            src: "{{ remote_pfx_path }}"
+            dest: "{{ fetched_pfx_path }}"
+            flat: true
+
+        # Step 1b: push it from the control node onto the Windows host.
         - name: Copy PFX from control node to local disk
           ansible.windows.win_copy:
             src: "{{ fetched_pfx_path }}"
             dest: "{{ local_pfx_path }}"
+
+        # Capture both thumbprints right after the copy, before anything is imported or
+        # changed on the host:
+        #   - old: whatever the RDP-Tcp listener is currently bound to, read straight from
+        #     the registry key Win32_TSGeneralSetting itself reflects (same value, no WMI
+        #     round trip needed).
+        #   - new: read directly from the PFX file on disk via X509Certificate2Collection,
+        #     since the file may contain more than the leaf cert (e.g. an intermediate) —
+        #     filters down to whichever entry actually has a private key, and throws if
+        #     that isn't exactly one, same as the original script's throws.
+        # No module does either of these, so both stay ad-hoc PowerShell via win_powershell.
+        # EphemeralKeySet loads the private key without writing a temp key file to disk —
+        # this is a read-only inspection, nothing here should persist anything.
+        - name: Read old and new certificate thumbprints
+          ansible.windows.win_powershell:
+            error_action: stop
+            script: |
+              $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+              $oldBytes = (Get-ItemProperty -Path $regPath -Name SSLCertificateSHA1Hash -ErrorAction SilentlyContinue).SSLCertificateSHA1Hash
+              $oldThumbprint = if ($oldBytes) { ($oldBytes | ForEach-Object { $_.ToString("X2") }) -join "" } else { "" }
+
+              $collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+              $collection.Import('{{ local_pfx_path }}', '{{ pfx_password }}', 'EphemeralKeySet')
+              $withKey = $collection | Where-Object { $_.HasPrivateKey }
+              if ($withKey.Count -ne 1) {
+                  throw "Expected exactly one certificate with a private key in {{ local_pfx_path }}, found $($withKey.Count)."
+              }
+
+              [PSCustomObject]@{
+                  OldThumbprint = $oldThumbprint
+                  NewThumbprint = $withKey[0].Thumbprint
+              }
+          register: thumbprint_check
+
+        - name: Set old and new thumbprint facts
+          ansible.builtin.set_fact:
+            old_thumbprint: "{{ thumbprint_check.output[0].OldThumbprint }}"
+            new_thumbprint: "{{ thumbprint_check.output[0].NewThumbprint }}"
+
+        - name: Report captured thumbprints
+          ansible.builtin.debug:
+            msg:
+              - "Certificate: {{ cert_name }}"
+              - "Currently bound (old) thumbprint: {{ old_thumbprint if old_thumbprint else 'none found' }}"
+              - "New certificate thumbprint: {{ new_thumbprint }}"
 
         # Step 2a: import the PFX into the LocalMachine\My store (replaces certutil -importPFX).
         - name: Import PFX into LocalMachine\My
@@ -90,40 +139,15 @@
             key_exportable: false
           register: cert_import
 
-        # Step 2b: win_certificate_store returns the thumbprint(s) of everything the PFX
-        # touched (win_certificate_store.thumbprints). A PFX can contain more than just the
-        # leaf cert (e.g. an intermediate in the chain), so look up details on each thumbprint
-        # rather than assuming the list has exactly one entry.
-        - name: Get details of every certificate the import touched
-          ansible.windows.win_certificate_info:
-            thumbprint: "{{ item }}"
-            store_location: LocalMachine
-            store_name: My
-          register: cert_import_info
-          loop: "{{ cert_import.thumbprints }}"
-          loop_control:
-            label: "{{ item }}"
-
-        # Step 2c: pick out the one cert from the import that actually has a private key —
-        # that's the leaf/RDP cert, as opposed to any intermediate CA cert also in the PFX —
-        # and fail with a clear message if there isn't exactly one (replaces the original's
-        # "not found" / "no private key" throws, now derived rather than hardcoded).
-        - name: Identify the certificate with a private key
-          ansible.builtin.set_fact:
-            private_key_certs: "{{ cert_import_info.results | map(attribute='certificates') | map('first') | selectattr('has_private_key') | map(attribute='thumbprint') | list }}"
-
-        - name: Verify exactly one certificate with a private key was imported
+        # Sanity check: confirm the import actually produced the cert we read from the file
+        # a moment ago, rather than trusting the pre-import read blindly.
+        - name: Verify the imported certificate matches the expected thumbprint
           ansible.builtin.assert:
             that:
-              - private_key_certs | length == 1
+              - new_thumbprint in cert_import.thumbprints
             fail_msg: >-
-              Expected exactly one certificate with a private key from {{ local_pfx_path }},
-              found {{ private_key_certs | length }}: {{ private_key_certs }}
-            success_msg: "Using certificate {{ private_key_certs[0] }}"
-
-        - name: Set the deployed certificate's thumbprint
-          ansible.builtin.set_fact:
-            new_thumbprint: "{{ private_key_certs[0] }}"
+              Import did not produce the expected certificate {{ new_thumbprint }};
+              store now has {{ cert_import.thumbprints }}.
 
         # Step 2d: bind the new cert to the RDP listener.
         # No module (ansible.windows or community.windows) wraps Win32_TSGeneralSetting /
@@ -179,25 +203,26 @@
             state: touch
 
         # Step 6: delete the old certificate now that the new one is fully in place.
+        # Guarded two ways: skip if there was nothing bound before (fresh host), and never
+        # remove it if old and new happen to be the same thumbprint — that would mean the
+        # marker check somehow got bypassed and this is a re-run against an already-deployed
+        # cert, and deleting it here would rip out the cert we just bound.
         - name: Remove old certificate
           ansible.windows.win_certificate_store:
             thumbprint: "{{ old_thumbprint }}"
             store_location: LocalMachine
             store_name: My
             state: absent
+          when:
+            - old_thumbprint | length > 0
+            - old_thumbprint != new_thumbprint
 
-- name: Clean up fetched PFX from the control node
-  hosts: localhost
-  connection: local
-  gather_facts: false
-
-  vars:
-    fetched_pfx_path: /tmp/ansible-fetched-certs/local.flexnet.net.p12
-
-  tasks:
-    # Runs regardless of whether Play 2 deployed anything (the marker guard may have
-    # skipped it) — Play 1 always fetches, so this always has something to clean up.
-    - name: Remove the fetched PFX from the control node
-      ansible.builtin.file:
-        path: "{{ fetched_pfx_path }}"
-        state: absent
+        # Clean up the fetched PFX from the control node — it's a password-protected private
+        # key, no reason to leave it sitting on the controller's disk after the run. Only
+        # reachable when this block actually ran, since that's the only time anything was
+        # fetched in the first place.
+        - name: Remove the fetched PFX from the control node
+          delegate_to: localhost
+          ansible.builtin.file:
+            path: "{{ fetched_pfx_path }}"
+            state: absent

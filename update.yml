@@ -1,0 +1,22 @@
+Project Name: Secure Boot & Platform Key Audit Automation
+
+Objective: Automate the validation of Microsoft 2023 Secure Boot certificate deployment across all Windows servers in CS/CSQ environments, eliminating the need for manual per-server checks via RDP.
+
+Scope: All Windows servers in CS and CSQ environments (~548 hosts)
+
+Technology/End Result: Ansible Automation Platform (AAP), PowerShell, CSV report delivered via email
+
+Key Metrics:
+
+Hours/month saved: ~45 hours per audit run (548 servers × 5 mins manually per server). This number multiplies based on how frequently the audit is executed. If run weekly that would be ~180 hours/month saved.
+
+Processes eliminated:
+
+Manual RDP to each server
+Manual PowerShell script execution per server
+Manual data collection and recording
+Manual report compilation
+Manual email distribution
+Manual TrueSight checks
+
+Error reduction: ~95% — Ansible runs identical checks consistently across all hosts simultaneously with no manual intervention, eliminating human error in data collection and reporting.

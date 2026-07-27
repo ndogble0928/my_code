@@ -1,0 +1,56 @@
+---
+- name: Install SolarWinds Platform Agent
+  hosts: linux_targets
+  become: true
+  vars:
+    swi_src: /tmp/swiagent.tar.gz
+    swi_inst_dir: /tmp/inst
+
+  tasks:
+    - name: Copy swiagent.tar.gz to target
+      ansible.builtin.copy:
+        src: files/swiagent.tar.gz
+        dest: "{{ swi_src }}"
+        mode: '0644'
+
+    - name: Create install directory
+      ansible.builtin.file:
+        path: "{{ swi_inst_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Extract archive
+      ansible.builtin.unarchive:
+        src: "{{ swi_src }}"
+        dest: "{{ swi_inst_dir }}"
+        remote_src: true
+
+    - name: Run installer
+      ansible.builtin.command: ./install.sh
+      args:
+        chdir: "{{ swi_inst_dir }}"
+        creates: /opt/solarwinds/agent  # adjust to real install marker path
+      register: swi_install
+
+    - name: Show install output
+      ansible.builtin.debug:
+        var: swi_install.stdout_lines
+
+
+- name: Install SolarWinds Agent (Windows)
+  hosts: windows_targets
+  tasks:
+    - name: Copy extracted agent files to target
+      ansible.windows.win_copy:
+        src: files/SolarWinds-Agent/
+        dest: C:\Temp\SolarWinds-Agent\
+
+    - name: Run setup.bat
+      ansible.windows.win_command: setup.bat
+      args:
+        chdir: C:\Temp\SolarWinds-Agent
+      register: setup_result
+
+    - name: Reboot to trigger silent install
+      ansible.windows.win_reboot:
+        reboot_timeout: 600

@@ -1,0 +1,28 @@
+Industry-standard authorization protocol used to authenticate the AAP-to-SharePoint Graph API connection without exposing user credentials
+
+
+Service Accounts Requirements
+SharePoint
+Read-only Graph API application permission scoped to the specific SharePoint site/list (Sites.Selected or equivalent) — not tenant-wide read access
+Non-interactive app registration; Client ID/Client Secret stored in AAP's credential vault, never inline in playbooks
+Secret rotation policy defined and owner assigned for periodic access review
+Ansible
+Service account scoped to only the CS-side systems/actions the resulting automation is authorized to touch
+Non-interactive, MFA-exempt with compensating controls (IP allow-list, credential vaulting, audit logging)
+Execution and decision logic auditable — which ERT row triggered which automation action, with timestamp and outcome
+Known Risk Factors
+Incorrect or stale data
+Ansible acts on ERT data written into memory at retrieval time; a delayed sync, partial pull, or Graph API failure mid-retrieval could cause automation decisions to be based on incomplete or outdated table state
+Mitigation: validate record count/checksum before acting; fail closed (no action) on incomplete retrieval
+Credential exposure
+Client ID/Client Secret must be held in AAP's credential store, not embedded in playbooks or logged in plaintext
+Mitigation: AAP Vault credential type; secret rotation cadence; restrict who can view/export the credential object
+Overprivileged access scope
+A tenant-wide or site-collection-wide Graph API grant would expose more SharePoint content than the ERT list itself
+Mitigation: scope the Azure AD app registration to the specific site/list only
+Uncontrolled trigger source
+If the Archer “true” field can be set by users without validation or approval workflow, it becomes a de facto trigger for automation against CS infrastructure
+Mitigation: confirm Archer-side approval/workflow controls on who can set the field, and add a secondary validation check in Ansible before acting
+Insufficient audit trail
+Without logging of which ERT record drove which automation decision, compliance traceability and incident investigation are impaired
+Mitigation: log source record ID, retrieved field values, decision outcome, and execution result for every run

@@ -14,7 +14,7 @@ Freshness: AAP acts on data retrieved at time of run instead of a periodically-e
 
 
 
-
+No individual user access applies — this integration uses a single non-interactive Azure AD app registration (Client ID/Client Secret), not user accounts. Access is granted by scoping the app's Graph API permission to the specific SharePoint site/list, and removed by revoking the registration or rotating the Client Secret. Managed by the credential owner via standard Azure AD app registration review.
 
 Service Accounts Requirements
 SharePoint

@@ -1,6 +1,21 @@
 Industry-standard authorization protocol used to authenticate the AAP-to-SharePoint Graph API connection without exposing user credentials
 
 
+Previous process (RA 1948) was file-based: SharePoint exported ERT data to the CS Shared Drive; AAP ingested the file from there.
+
+This proposal replaces the file export with a direct API integration: AAP retrieves ERT data in real time via Microsoft Graph API (OAuth, Client ID/Client Secret) — no shared drive in the data path.
+
+Key changes:
+
+Data path: removes CS Shared Drive as a data-at-rest location
+Authentication: adds Azure AD app registration (Client ID/Client Secret) and OAuth, vaulted in AAP, replacing shared-drive permissions
+Access scope: narrows from shared-drive-level access to a Graph API grant scoped to the specific SharePoint site/list
+Freshness: AAP acts on data retrieved at time of run instead of a periodically-exported file
+
+
+
+
+
 Service Accounts Requirements
 SharePoint
 Read-only Graph API application permission scoped to the specific SharePoint site/list (Sites.Selected or equivalent) — not tenant-wide read access

@@ -1,0 +1,8 @@
+Generated,{{ '%Y-%m-%d %H:%M' | strftime }}
+Validation Type,Automated Log Validation
+Device Type,Device Name,Found
+{% for dtype, missing_list in missing_devices_by_type.items() %}
+{% for device in (master_device_list | selectattr('device_type', 'equalto', dtype) | map(attribute='device_name') | list) %}
+{{ dtype }},{{ device }},{{ 'NOT FOUND' if device in missing_list else 'FOUND' }}
+{% endfor %}
+{% endfor %}

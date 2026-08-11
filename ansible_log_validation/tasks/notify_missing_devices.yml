@@ -1,0 +1,18 @@
+---
+# Sends one email per device type listing devices not found in their
+# expected log review file. Skipped entirely (see playbook.yml `when`
+# clause) for device types with no missing devices.
+
+- name: Render missing-devices email body
+  ansible.builtin.set_fact:
+    missing_devices_email_body: "{{ lookup('template', 'templates/missing_devices_email.j2') }}"
+
+- name: Email missing devices to responsible SME
+  community.general.mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    from: "{{ notify_from_address }}"
+    to: "{{ device_type_entry.notify_to }}"
+    subject: "Log Validation - Missing Devices: {{ device_type_entry.name }} ({{ '%Y-%m-%d' | strftime }})"
+    body: "{{ missing_devices_email_body }}"
+    subtype: plain

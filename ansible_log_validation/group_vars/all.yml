@@ -1,0 +1,59 @@
+---
+# =============================================================================
+# Configuration
+# All secrets below (vault_*) should live in an Ansible Vault-encrypted file
+# or, preferably, AAP's built-in credential store — never committed in
+# plaintext alongside this playbook.
+# =============================================================================
+
+working_dir: "/tmp/log_validation/{{ ansible_date_time.iso8601_basic_short | default('run') }}"
+report_output_dir: "/var/reports/log_validation"   # fileshare path AAP writes reports to
+
+# ---- Archer (API) ----
+archer_api_base_url: "https://archer.dominionnet.example/api"
+archer_client_id: "{{ vault_archer_client_id }}"
+archer_client_secret: "{{ vault_archer_client_secret }}"
+archer_device_report_id: "CHANGE_ME"   # Archer content/report ID to query
+
+# ---- SharePoint ERT (Microsoft Graph API) ----
+graph_api_base_url: "https://graph.microsoft.com/v1.0"
+graph_tenant_id: "{{ vault_graph_tenant_id }}"
+graph_client_id: "{{ vault_graph_client_id }}"
+graph_client_secret: "{{ vault_graph_client_secret }}"
+sharepoint_site_id: "CHANGE_ME"
+sharepoint_list_id: "CHANGE_ME"
+
+# ---- SFTP relay ----
+sftp_remote_log_path: "/relay/current_week"   # path on the SFTP relay holding this week's files
+local_log_staging_dir: "{{ working_dir }}/log_files"
+
+# ---- Email notification ----
+smtp_host: "smtp.dominionnet.example"
+smtp_port: 587
+notify_from_address: "log-validation-noreply@dominionenergy.com"
+
+# ---- Device type -> log file mapping ----
+# Mirrors the mapping logic currently embedded in the Excel macros; each
+# device type maps to the log file token(s) it should appear in.
+device_types:
+  - name: "InTrust Windows"
+    file_tokens: ["DC", "CS3_INTRUST", "CS3_SQL", "CTXWIN", "JH"]
+    notify_to: ["sme-intrust-windows@dominionenergy.com"]
+  - name: "InTrust EMS"
+    file_tokens: ["EMS-W", "EMS-S32"]
+    notify_to: ["sme-ems@dominionenergy.com"]
+  - name: "InTrust GMS"
+    file_tokens: ["GMS"]
+    notify_to: ["sme-gms@dominionenergy.com"]
+  - name: "Syslog"
+    file_tokens: ["Brocade", "DNO", "ESXi-00", "Hitachi", "HPOV", "iLO", "Nessus", "NetScaler", "OBA", "RPS", "ISE"]
+    notify_to: ["sme-syslog@dominionenergy.com"]
+  - name: "Syslog EMS"
+    file_tokens: ["EMS32"]
+    notify_to: ["sme-ems@dominionenergy.com"]
+  - name: "Palo Alto"
+    file_tokens: ["ET_Threat", "PG_Threat"]
+    notify_to: ["sme-firewall@dominionenergy.com"]
+  - name: "SecurID"
+    file_tokens: ["SecurID"]
+    notify_to: ["sme-securid@dominionenergy.com"]

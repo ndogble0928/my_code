@@ -1,0 +1,39 @@
+---
+# Retrieve device list from Archer via API (OAuth client-credentials flow).
+# SKELETON: replace endpoints/payload shapes with Archer's actual REST/OData
+# contract for the target report/content object.
+
+- name: Authenticate to Archer API
+  ansible.builtin.uri:
+    url: "{{ archer_api_base_url }}/core/security/login"
+    method: POST
+    body_format: json
+    body:
+      InstanceName: "CHANGE_ME"
+      Username: "{{ archer_client_id }}"
+      Password: "{{ archer_client_secret }}"
+    status_code: 200
+  register: archer_auth
+  no_log: true   # avoid leaking token/credentials into job output
+
+- name: Query Archer device report
+  ansible.builtin.uri:
+    url: "{{ archer_api_base_url }}/core/content/{{ archer_device_report_id }}"
+    method: GET
+    headers:
+      Authorization: "Archer session-id={{ archer_auth.json.RequestedObject.SessionToken }}"
+    status_code: 200
+  register: archer_response
+
+- name: Normalize Archer devices into the common device-list shape
+  ansible.builtin.set_fact:
+    archer_devices: >-
+      {{
+        archer_response.json.records | default([]) | map('community.general.json_query', {
+          'device_name': 'Fields."Device Name"',
+          'device_type': 'Fields."Device Type for Log Reviews"',
+          'source': "'archer'"
+        }) | list
+      }}
+  # NOTE: the json_query filter above is illustrative; adjust to Archer's
+  # actual response schema (nested Fields object, field IDs vs. names, etc.)

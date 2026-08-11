@@ -1,0 +1,19 @@
+---
+# Renders a single consolidated Found/Not Found report covering all device
+# types, and writes it to the fileshare report location.
+
+- name: Ensure report output directory exists
+  ansible.builtin.file:
+    path: "{{ report_output_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Render validation report from template
+  ansible.builtin.template:
+    src: templates/validation_report.csv.j2
+    dest: "{{ report_output_dir }}/LogValidation_{{ '%Y%m%d' | strftime }}.csv"
+    mode: "0640"
+
+- name: Confirm report was written
+  ansible.builtin.debug:
+    msg: "Validation report written to {{ report_output_dir }}/LogValidation_{{ '%Y%m%d' | strftime }}.csv"

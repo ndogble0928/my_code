@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# Automated Log Validation
+# Compares the master device list (Archer + SharePoint ERT, via API) against
+# the current week's log review files (retrieved via SSH from the SFTP relay)
+# and reports devices missing from their expected log file.
+#
+# SKELETON: module names, paths, and structure are illustrative. Fill in
+# connection details, real field mappings, and error handling before running
+# against production systems.
+# =============================================================================
+
+- name: Automated Log Validation - Build master device list
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - group_vars/all.yml
+
+  tasks:
+    - name: Retrieve device list from Archer (API)
+      ansible.builtin.include_tasks: tasks/get_archer_devices.yml
+
+    - name: Retrieve device list from SharePoint ERT (Microsoft Graph API)
+      ansible.builtin.include_tasks: tasks/get_sharepoint_devices.yml
+
+    - name: Merge device lists into a single master list
+      ansible.builtin.set_fact:
+        master_device_list: "{{ (archer_devices | default([])) + (sharepoint_devices | default([])) }}"
+
+    - name: Show device count retrieved (debug)
+      ansible.builtin.debug:
+        msg: "Retrieved {{ master_device_list | length }} devices across {{ master_device_list | map(attribute='device_type') | unique | list | length }} device types"
+
+    - name: Persist master device list to controller for downstream plays
+      ansible.builtin.copy:
+        content: "{{ master_device_list | to_nice_json }}"
+        dest: "{{ working_dir }}/master_device_list.json"
+        mode: "0640"
+
+- name: Automated Log Validation - Retrieve current week log files
+  hosts: sftp_relay
+  gather_facts: false
+  vars_files:
+    - group_vars/all.yml
+
+  tasks:
+    - name: Pull current week's log review files from SFTP relay
+      ansible.builtin.include_tasks: tasks/fetch_log_files.yml
+
+- name: Automated Log Validation - Compare, report, and notify
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - group_vars/all.yml
+
+  tasks:
+    - name: Reload master device list
+      ansible.builtin.set_fact:
+        master_device_list: "{{ lookup('file', working_dir + '/master_device_list.json') | from_json }}"
+
+    - name: Compare device list against retrieved log files, per device type
+      ansible.builtin.include_tasks: tasks/compare_devices.yml
+      loop: "{{ device_types }}"
+      loop_control:
+        loop_var: device_type_entry
+
+    - name: Generate consolidated Found/Not Found validation report
+      ansible.builtin.include_tasks: tasks/generate_report.yml
+
+    - name: Email missing devices, one message per device type
+      ansible.builtin.include_tasks: tasks/notify_missing_devices.yml
+      loop: "{{ device_types }}"
+      loop_control:
+        loop_var: device_type_entry
+      when: (missing_devices_by_type[device_type_entry.name] | default([])) | length > 0

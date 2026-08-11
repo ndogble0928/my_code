@@ -1,0 +1,9 @@
+The following {{ device_type_entry.name }} devices were NOT found in this week's log review file(s) as of {{ '%Y-%m-%d' | strftime }}:
+
+{% for device in missing_devices_by_type[device_type_entry.name] %}
+  - {{ device }}
+{% endfor %}
+
+Please confirm whether these devices are expected to be logging and update the log source or device record as needed.
+
+This is an automated notification from the Log Validation process on the Central Services Ansible Automation Platform.

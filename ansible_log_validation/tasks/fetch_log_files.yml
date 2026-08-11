@@ -1,0 +1,40 @@
+---
+# Runs against the sftp_relay host group. Pulls the current week's log
+# review files down to the AAP controller for comparison.
+#
+# Uses ansible.posix.synchronize (rsync over SSH). If rsync isn't available
+# on the relay, fall back to the commented `fetch` loop below.
+
+- name: Ensure local staging directory exists on controller
+  ansible.builtin.file:
+    path: "{{ local_log_staging_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  run_once: true
+
+- name: List current week's log files on the SFTP relay
+  ansible.builtin.find:
+    paths: "{{ sftp_remote_log_path }}"
+    patterns: "*.csv"
+    age: "-7d"          # only files from the current review week
+  register: remote_log_files
+
+- name: Pull log files from relay to controller (rsync over SSH)
+  ansible.posix.synchronize:
+    mode: pull
+    src: "{{ item.path }}"
+    dest: "{{ local_log_staging_dir }}/"
+  loop: "{{ remote_log_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# --- Fallback if rsync is unavailable on the relay ---
+# - name: Fetch log files individually (fallback)
+#   ansible.builtin.fetch:
+#     src: "{{ item.path }}"
+#     dest: "{{ local_log_staging_dir }}/"
+#     flat: true
+#   loop: "{{ remote_log_files.files }}"
+#   loop_control:
+#     label: "{{ item.path }}"

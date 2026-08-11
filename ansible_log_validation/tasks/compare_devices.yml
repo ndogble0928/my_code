@@ -1,0 +1,37 @@
+---
+# Compares devices of a single device type against their matching log
+# file(s). Looped once per entry in `device_types` (see group_vars/all.yml).
+#
+# SKELETON: the actual "is this device present in the log file" check
+# depends on file format (CSV columns vary per technology) and match key
+# (hostname, FQDN, or IP address, as seen across the various macros this
+# replaces). A custom filter plugin is the cleanest way to encapsulate that
+# per-file-format logic — see filter_plugins/log_lookup.py.
+
+- name: Select devices of this type from the master device list
+  ansible.builtin.set_fact:
+    devices_of_type: "{{ master_device_list | selectattr('device_type', 'equalto', device_type_entry.name) | list }}"
+
+- name: Find log files on disk matching this device type's file tokens
+  ansible.builtin.find:
+    paths: "{{ local_log_staging_dir }}"
+    patterns: "{{ device_type_entry.file_tokens | map('regex_replace', '^(.*)$', '*\\1*.csv') | list }}"
+    use_regex: false
+  register: matching_log_files
+
+- name: Determine which devices are missing from their expected log file(s)
+  ansible.builtin.set_fact:
+    missing_devices_by_type: >-
+      {{
+        (missing_devices_by_type | default({}))
+        | combine({
+            device_type_entry.name: devices_of_type
+              | rejectattr('device_name', 'in', (matching_log_files.files | map(attribute='path') | list | log_lookup_all_hostnames))
+              | map(attribute='device_name')
+              | list
+          })
+      }}
+  # `log_lookup_all_hostnames` is a placeholder custom filter that would open
+  # each matched log file and return the set of hostnames/IPs/FQDNs found
+  # within it (resolving FQDN -> short hostname where needed, per the
+  # existing macro logic). Implement in filter_plugins/log_lookup.py.

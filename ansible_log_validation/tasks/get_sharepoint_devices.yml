@@ -1,0 +1,39 @@
+---
+# Retrieve device list from SharePoint ERT via Microsoft Graph API
+# (OAuth client-credentials flow against Azure AD).
+
+- name: Acquire Graph API access token
+  ansible.builtin.uri:
+    url: "https://login.microsoftonline.com/{{ graph_tenant_id }}/oauth2/v2.0/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: client_credentials
+      client_id: "{{ graph_client_id }}"
+      client_secret: "{{ graph_client_secret }}"
+      scope: "https://graph.microsoft.com/.default"
+    status_code: 200
+  register: graph_auth
+  no_log: true
+
+- name: Query SharePoint ERT list items via Graph API
+  ansible.builtin.uri:
+    url: "{{ graph_api_base_url }}/sites/{{ sharepoint_site_id }}/lists/{{ sharepoint_list_id }}/items?expand=fields"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ graph_auth.json.access_token }}"
+    status_code: 200
+  register: sharepoint_response
+
+- name: Normalize SharePoint ERT devices into the common device-list shape
+  ansible.builtin.set_fact:
+    sharepoint_devices: >-
+      {{
+        sharepoint_response.json.value | default([])
+        | selectattr('fields.ArcherSynch', 'defined')
+        | map(attribute='fields')
+        | map('combine', {'source': 'sharepoint_ert'})
+        | list
+      }}
+  # NOTE: adjust field names (device name, device type columns) to match the
+  # actual SharePoint ERT list schema.

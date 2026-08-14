@@ -2,13 +2,13 @@ Subject: Graph API Permissions Request — SharePoint ERT Integration with AAP (
 
 Hi Cyber Risk Team,
 
-I'm requesting a risk assessment of Microsoft Graph API permissions for an app registration tied to RA 2144 (SharePoint ERT Integration with Central Services Ansible Automation Platform), which has already been approved.
+Per Michael Lloyd, a separate risk assessment appears to be required specifically for the Microsoft Graph API permissions on our app registration, even though the overall integration (RA 2144) has already been approved. I'm reaching out to determine the appropriate process for that assessment.
 
 
-Purpose: Read-only access to retrieve SharePoint ERT table data (records with the Archer field set to "true") via Microsoft Graph API, to drive automation decisions in CS AAP
+Purpose: Read-only access to retrieve SharePoint ERT table data (records with the Archer field set to "true") via Microsoft Graph API, to drive automation decisions within CS AAP
 Requested scope: Read-only, scoped to the specific SharePoint site/list (Sites.Selected or equivalent) — not tenant-wide
 
-Could you point me to the appropriate form or process to get this assessed, and confirm next steps once approved?
+Could you advise on the appropriate form or process to have this assessed, and confirm the next steps once approved?
 
 Thank you,
 Nico

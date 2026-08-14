@@ -1,3 +1,7 @@
-Hi Steven — David’s asking us to document the Graph API permission type/scope for AA 7.3 on the ticket. Based on how AAP authenticates (non-interactive service, OAuth client credentials — no signed-in user), my understanding is this needs to be an Application permission (Sites.Selected) rather than Delegated, since there’s no user to delegate on behalf of.
+@David J Griffin
 
-Can you confirm that’s correct before I post it to the ticket? Also flagging David’s note that Application permissions require additional vendor conversations/compensating controls — want to make sure we’re prepared for that given this is an internal AAP integration, not a third-party vendor.
+[APPLICATION] Sites.Selected
+
+This must be an Application permission rather than Delegated, since AAP authenticates as a non-interactive service using OAuth client credentials (Client ID/Secret) — there's no signed-in user to delegate on behalf of, which Delegated permissions require.
+
+Understood that Application permissions may require additional conversations and compensating controls. Since this is an internal Ansible Automation Platform integration (not a third-party vendor), happy to discuss what compensating controls would apply here — let me know next steps.

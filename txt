@@ -1,14 +1,3 @@
-Subject: Graph API Permissions Request — SharePoint ERT Integration with AAP (RA 2144)
+Hi Steven — David’s asking us to document the Graph API permission type/scope for AA 7.3 on the ticket. Based on how AAP authenticates (non-interactive service, OAuth client credentials — no signed-in user), my understanding is this needs to be an Application permission (Sites.Selected) rather than Delegated, since there’s no user to delegate on behalf of.
 
-Hi Cyber Risk Team,
-
-Per Michael Lloyd, a separate risk assessment appears to be required specifically for the Microsoft Graph API permissions on our app registration, even though the overall integration (RA 2144) has already been approved. I'm reaching out to determine the appropriate process for that assessment.
-
-
-Purpose: Read-only access to retrieve SharePoint ERT table data (records with the Archer field set to "true") via Microsoft Graph API, to drive automation decisions within CS AAP
-Requested scope: Read-only, scoped to the specific SharePoint site/list (Sites.Selected or equivalent) — not tenant-wide
-
-Could you advise on the appropriate form or process to have this assessed, and confirm the next steps once approved?
-
-Thank you,
-Nico
+Can you confirm that’s correct before I post it to the ticket? Also flagging David’s note that Application permissions require additional vendor conversations/compensating controls — want to make sure we’re prepared for that given this is an internal AAP integration, not a third-party vendor.

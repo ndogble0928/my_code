@@ -1,43 +1,14 @@
-Industry-standard authorization protocol used to authenticate the AAP-to-SharePoint Graph API connection without exposing user credentials
+Subject: Graph API Permissions Request — SharePoint ERT Integration with AAP (RA 2144)
+
+Hi Cyber Risk Team,
+
+I'm requesting a risk assessment of Microsoft Graph API permissions for an app registration tied to RA 2144 (SharePoint ERT Integration with Central Services Ansible Automation Platform), which has already been approved.
 
 
-Previous process (RA 1948) was file-based: SharePoint exported ERT data to the CS Shared Drive; AAP ingested the file from there.
+Purpose: Read-only access to retrieve SharePoint ERT table data (records with the Archer field set to "true") via Microsoft Graph API, to drive automation decisions in CS AAP
+Requested scope: Read-only, scoped to the specific SharePoint site/list (Sites.Selected or equivalent) — not tenant-wide
 
-This proposal replaces the file export with a direct API integration: AAP retrieves ERT data in real time via Microsoft Graph API (OAuth, Client ID/Client Secret) — no shared drive in the data path.
+Could you point me to the appropriate form or process to get this assessed, and confirm next steps once approved?
 
-Key changes:
-
-Data path: removes CS Shared Drive as a data-at-rest location
-Authentication: adds Azure AD app registration (Client ID/Client Secret) and OAuth, vaulted in AAP, replacing shared-drive permissions
-Access scope: narrows from shared-drive-level access to a Graph API grant scoped to the specific SharePoint site/list
-Freshness: AAP acts on data retrieved at time of run instead of a periodically-exported file
-
-
-
-No individual user access applies — this integration uses a single non-interactive Azure AD app registration (Client ID/Client Secret), not user accounts. Access is granted by scoping the app's Graph API permission to the specific SharePoint site/list, and removed by revoking the registration or rotating the Client Secret. Managed by the credential owner via standard Azure AD app registration review.
-
-Service Accounts Requirements
-SharePoint
-Read-only Graph API application permission scoped to the specific SharePoint site/list (Sites.Selected or equivalent) — not tenant-wide read access
-Non-interactive app registration; Client ID/Client Secret stored in AAP's credential vault, never inline in playbooks
-Secret rotation policy defined and owner assigned for periodic access review
-Ansible
-Service account scoped to only the CS-side systems/actions the resulting automation is authorized to touch
-Non-interactive, MFA-exempt with compensating controls (IP allow-list, credential vaulting, audit logging)
-Execution and decision logic auditable — which ERT row triggered which automation action, with timestamp and outcome
-Known Risk Factors
-Incorrect or stale data
-Ansible acts on ERT data written into memory at retrieval time; a delayed sync, partial pull, or Graph API failure mid-retrieval could cause automation decisions to be based on incomplete or outdated table state
-Mitigation: validate record count/checksum before acting; fail closed (no action) on incomplete retrieval
-Credential exposure
-Client ID/Client Secret must be held in AAP's credential store, not embedded in playbooks or logged in plaintext
-Mitigation: AAP Vault credential type; secret rotation cadence; restrict who can view/export the credential object
-Overprivileged access scope
-A tenant-wide or site-collection-wide Graph API grant would expose more SharePoint content than the ERT list itself
-Mitigation: scope the Azure AD app registration to the specific site/list only
-Uncontrolled trigger source
-If the Archer “true” field can be set by users without validation or approval workflow, it becomes a de facto trigger for automation against CS infrastructure
-Mitigation: confirm Archer-side approval/workflow controls on who can set the field, and add a secondary validation check in Ansible before acting
-Insufficient audit trail
-Without logging of which ERT record drove which automation decision, compliance traceability and incident investigation are impaired
-Mitigation: log source record ID, retrieved field values, decision outcome, and execution result for every run
+Thank you,
+Nico

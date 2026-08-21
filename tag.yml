@@ -1,0 +1,268 @@
+---
+# =============================================================================
+# vCenter Tag Resolution Test Playbook  —  community.vmware  (v4)
+# =============================================================================
+# Purpose : Survey ORG / LOCATION / ENVIRONMENT / OS_VARIANT, resolve the
+#           Datacenter, Cluster, Datastore and Folder, print the result.
+#           Read-only — no VM is deployed.
+#
+# Verified against community.vmware module source (main branch):
+#   - vmware_datacenter_info : show_tag supported, returns 'datacenter_info' (list)
+#   - vmware_cluster_info    : show_tag supported, returns 'clusters' (dict keyed by name)
+#   - vmware_datastore_info  : show_tag supported, returns 'datastores' (list)
+#   - vmware_folder_info     : NO tag support — returns 'flat_folder_info' (moid + path)
+#
+# Tag structure returned by show_tag:
+#   tags: [ {id, name, category_name, description, category_id}, ... ]
+# =============================================================================
+
+- name: vCenter Tag Resolution Test
+  hosts: localhost
+  gather_facts: false
+
+  # vcenter_hostname / vcenter_username / vcenter_password are injected by the
+  # AAP "VMware vCenter" credential type. Do not define them here.
+  vars:
+    vcenter_validate_certs: false
+
+  vars_prompt:
+    - name: org
+      prompt: "ORG (CS, NMS, EMS, GMS, ADMS, SYNC, AMAG)"
+      private: false
+    - name: location
+      prompt: "LOCATION (INB, RIC, MGB, MGA)"
+      private: false
+    - name: environment
+      prompt: "ENVIRONMENT (Prod, QA, Test, Dev)"
+      private: false
+    - name: os_variant
+      prompt: "OS_VARIANT (Linux, Windows)"
+      private: false
+
+  module_defaults:
+    group/community.vmware.vmware:
+      hostname: "{{ vcenter_hostname }}"
+      username: "{{ vcenter_username }}"
+      password: "{{ vcenter_password }}"
+      validate_certs: "{{ vcenter_validate_certs }}"
+
+  tasks:
+
+    - name: Display survey inputs
+      ansible.builtin.debug:
+        msg:
+          - "ORG         : {{ org }}"
+          - "LOCATION    : {{ location }}"
+          - "ENVIRONMENT : {{ environment }}"
+          - "OS VARIANT  : {{ os_variant }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 1 — DATACENTER
+    #   1st: Datacenter_Org_<ORG> + Datacenter_Location_<LOC>
+    #   2nd: Datacenter_Org_<ORG> + Datacenter_Location_Default
+    # ═══════════════════════════════════════════════════════════════════
+    - name: "DC | Gather all datacenters with tags"
+      community.vmware.vmware_datacenter_info:
+        show_tag: true
+      register: dc_info
+
+    - name: "DC | Flatten to name + tag-name list"
+      ansible.builtin.set_fact:
+        dc_map: >-
+          {{ dc_info.datacenter_info
+             | map('combine', {})
+             | list
+             | json_query('[].{name: name, tags: tags[].name}') }}
+
+    - name: "DC | Resolve — specific, then default"
+      ansible.builtin.set_fact:
+        dc_specific: >-
+          {{ dc_map | selectattr('tags', 'contains', 'Datacenter_Org_' ~ org)
+                    | selectattr('tags', 'contains', 'Datacenter_Location_' ~ location)
+                    | map(attribute='name') | list }}
+        dc_default: >-
+          {{ dc_map | selectattr('tags', 'contains', 'Datacenter_Org_' ~ org)
+                    | selectattr('tags', 'contains', 'Datacenter_Location_Default')
+                    | map(attribute='name') | list }}
+
+    - name: "DC | Set result"
+      ansible.builtin.set_fact:
+        target_datacenter: "{{ (dc_specific | first) if dc_specific | length > 0 else ((dc_default | first) if dc_default | length > 0 else '') }}"
+        dc_used_default: "{{ dc_specific | length == 0 and dc_default | length > 0 }}"
+
+    - name: "DC | Warn on ambiguous match"
+      ansible.builtin.debug:
+        msg: "WARNING: {{ dc_specific | length }} datacenters matched — using first ({{ target_datacenter }}). Tags are not unique."
+      when: dc_specific | length > 1
+
+    - name: "DC | FAIL — nothing found"
+      ansible.builtin.fail:
+        msg: >-
+          No datacenter tagged Datacenter_Org_{{ org }} + Datacenter_Location_{{ location }},
+          and no Datacenter_Location_Default for org {{ org }}.
+      when: target_datacenter == ''
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 2 — CLUSTER   (returns a DICT keyed by cluster name)
+    # ═══════════════════════════════════════════════════════════════════
+    - name: "Cluster | Gather clusters in {{ target_datacenter }} with tags"
+      community.vmware.vmware_cluster_info:
+        datacenter: "{{ target_datacenter }}"
+        show_tag: true
+      register: cluster_info
+
+    - name: "Cluster | Flatten dict to name + tag-name list"
+      ansible.builtin.set_fact:
+        cluster_map: >-
+          {{ cluster_info.clusters | dict2items
+             | json_query('[].{name: key, tags: value.tags[].name}') }}
+
+    - name: "Cluster | Resolve — specific, then default"
+      ansible.builtin.set_fact:
+        cl_specific: >-
+          {{ cluster_map | selectattr('tags', 'contains', 'Cluster_Org_' ~ org)
+                         | selectattr('tags', 'contains', 'Cluster_Location_' ~ location)
+                         | map(attribute='name') | list }}
+        cl_default: >-
+          {{ cluster_map | selectattr('tags', 'contains', 'Cluster_Org_' ~ org)
+                         | selectattr('tags', 'contains', 'Cluster_Location_Default')
+                         | map(attribute='name') | list }}
+
+    - name: "Cluster | Set result"
+      ansible.builtin.set_fact:
+        target_cluster: "{{ (cl_specific | first) if cl_specific | length > 0 else ((cl_default | first) if cl_default | length > 0 else '') }}"
+        cluster_used_default: "{{ cl_specific | length == 0 and cl_default | length > 0 }}"
+
+    - name: "Cluster | FAIL — nothing found"
+      ansible.builtin.fail:
+        msg: >-
+          No cluster tagged Cluster_Org_{{ org }} + Cluster_Location_{{ location }},
+          and no Cluster_Location_Default for org {{ org }}.
+      when: target_cluster == ''
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 3 — DATASTORE / DATASTORE CLUSTER
+    #
+    # The -DSC objects are datastore clusters (StoragePod). community.vmware
+    # has NO info module for them, so their tags cannot be read. Tags live on
+    # the MEMBER datastores instead; the member's 'datastore_cluster' field
+    # gives the parent pod name, which vmware_guest accepts directly (it
+    # resolves the pod and takes the SDRS recommendation).
+    #
+    #   1st: Org + Location         + OS
+    #   2nd: Org + Location         + OS_Default
+    #   3rd: Org + Location_Default + OS_Default
+    # ═══════════════════════════════════════════════════════════════════
+    - name: "DS | Gather datastores in {{ target_datacenter }} with tags"
+      community.vmware.vmware_datastore_info:
+        datacenter_name: "{{ target_datacenter }}"
+        show_tag: true
+      register: ds_info
+
+    - name: "DS | Flatten to name + parent pod + tag-name list"
+      ansible.builtin.set_fact:
+        ds_map: >-
+          {{ ds_info.datastores
+             | json_query('[].{name: name, pod: datastore_cluster, tags: tags[].name}') }}
+
+    - name: "DS | Resolve — three tiers"
+      ansible.builtin.set_fact:
+        ds_t1: >-
+          {{ ds_map | selectattr('tags', 'contains', 'Datastore_Org_' ~ org)
+                    | selectattr('tags', 'contains', 'Datastore_Location_' ~ location)
+                    | selectattr('tags', 'contains', 'Datastore_OS_' ~ os_variant)
+                    | list }}
+        ds_t2: >-
+          {{ ds_map | selectattr('tags', 'contains', 'Datastore_Org_' ~ org)
+                    | selectattr('tags', 'contains', 'Datastore_Location_' ~ location)
+                    | selectattr('tags', 'contains', 'Datastore_OS_Default')
+                    | list }}
+        ds_t3: >-
+          {{ ds_map | selectattr('tags', 'contains', 'Datastore_Org_' ~ org)
+                    | selectattr('tags', 'contains', 'Datastore_Location_Default')
+                    | selectattr('tags', 'contains', 'Datastore_OS_Default')
+                    | list }}
+
+    - name: "DS | Select matching tier"
+      ansible.builtin.set_fact:
+        ds_hits: >-
+          {{ ds_t1 if ds_t1 | length > 0
+             else (ds_t2 if ds_t2 | length > 0
+             else (ds_t3 if ds_t3 | length > 0 else [])) }}
+        ds_fallback_level: >-
+          {{ 'none' if ds_t1 | length > 0
+             else ('os_default' if ds_t2 | length > 0
+             else ('location_and_os_default' if ds_t3 | length > 0 else 'not_found')) }}
+
+    - name: "DS | FAIL — nothing found"
+      ansible.builtin.fail:
+        msg: >-
+          No datastore for org={{ org }} location={{ location }} os={{ os_variant }},
+          and no Datastore_OS_Default fallback exists.
+        # Tags belong on member datastores, not on the -DSC pod itself.
+      when: ds_hits | length == 0
+
+    # Distinct parent pods among the matches. 'N/A' means the datastore is
+    # standalone (not in a pod) — deploy to the datastore directly.
+    - name: "DS | Collect distinct parent pods"
+      ansible.builtin.set_fact:
+        ds_pods: >-
+          {{ ds_hits | map(attribute='pod') | reject('equalto', 'N/A')
+                     | reject('equalto', None) | unique | list }}
+
+    - name: "DS | FAIL — matches span more than one datastore cluster"
+      ansible.builtin.fail:
+        msg: >-
+          Matched datastores belong to {{ ds_pods | length }} different datastore
+          clusters ({{ ds_pods | join(', ') }}). Tags must not span pods —
+          correct the tagging before deploying.
+      when: ds_pods | length > 1
+
+    - name: "DS | Set result — prefer the pod, else the standalone datastore"
+      ansible.builtin.set_fact:
+        target_datastore: "{{ (ds_pods | first) if ds_pods | length == 1 else (ds_hits | first).name }}"
+        target_datastore_kind: "{{ 'datastore cluster (SDRS places)' if ds_pods | length == 1 else 'standalone datastore' }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 4 — FOLDER   (path convention, NOT tags)
+    #
+    # community.vmware.vmware_folder_info does NOT support show_tag and
+    # exposes no tag data, so folders cannot be matched on tags here.
+    # Matching is by path convention instead:  <ORG>-<LOC>-<OS>/<ENV>
+    # No fallback — if nothing matches, the VM goes to the datacenter root.
+    # ═══════════════════════════════════════════════════════════════════
+    - name: "Folder | Gather folder paths in {{ target_datacenter }}"
+      community.vmware.vmware_folder_info:
+        datacenter: "{{ target_datacenter }}"
+      register: folder_info
+
+    - name: "Folder | Build expected path fragment"
+      ansible.builtin.set_fact:
+        os_short: "{{ 'LX' if os_variant == 'Linux' else 'WIN' }}"
+
+    - name: "Folder | Match by convention <ORG>-<LOC>-<OS>/<ENV>"
+      ansible.builtin.set_fact:
+        folder_matches: >-
+          {{ folder_info.flat_folder_info
+             | selectattr('path', 'search', org ~ '-' ~ location ~ '-' ~ os_short ~ '/' ~ environment ~ '$')
+             | map(attribute='path') | list }}
+
+    - name: "Folder | Set result"
+      ansible.builtin.set_fact:
+        target_folder: "{{ (folder_matches | first) if folder_matches | length > 0 else '/ (datacenter root)' }}"
+        folder_used_root: "{{ folder_matches | length == 0 }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REPORT
+    # ═══════════════════════════════════════════════════════════════════
+    - name: Tag Resolution Results
+      ansible.builtin.debug:
+        msg:
+          - "============================================================"
+          - "  Inputs : {{ org }} / {{ location }} / {{ environment }} / {{ os_variant }}"
+          - "------------------------------------------------------------"
+          - "  Datacenter : {{ target_datacenter }}{{ '  [DEFAULT FALLBACK]' if dc_used_default | bool else '' }}"
+          - "  Cluster    : {{ target_cluster }}{{ '  [DEFAULT FALLBACK]' if cluster_used_default | bool else '' }}"
+          - "  Datastore  : {{ target_datastore }}  ({{ target_datastore_kind }})  [fallback: {{ ds_fallback_level }}]"
+          - "  Folder     : {{ target_folder }}{{ '  [NO MATCH — ROOT]' if folder_used_root | bool else '' }}"
+          - "============================================================"

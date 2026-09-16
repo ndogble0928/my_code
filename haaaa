@@ -1,0 +1,24 @@
+Hi Aaron,
+
+While working through the new patch group setup, we ran into a
+snag: the current 1TB.5 patch group runs on the Wednesday after
+Microsoft's Patch Tuesday (the 2nd Tuesday of the month). Because
+Patch Tuesday shifts, that Wednesday isn't always the same week of
+the month — usually the 2nd, but the 3rd in months where the 1st
+falls on a Wednesday.
+
+Since we manage our patch schedules through config-as-code, that's
+causing an issue on our end: we can't express this as a fixed,
+programmatic recurrence rule.
+
+We'd like to find a common schedule that works for both CS and the
+enterprise side and can be set programmatically — for example,
+always the 2nd Wednesday or always the 3rd Wednesday. Since these
+groups are meant to patch at the same time, a fixed rule would also
+keep both environments reliably in sync.
+
+If the 2nd Wednesday works on your end, we can proceed with that —
+otherwise let us know what you'd prefer.
+
+Thanks,
+Trevor

@@ -1,0 +1,21 @@
+#!/bin/bash
+# Usage: ./split_hosts.sh input_list.txt
+
+input="$1"
+p_file="hosts_4th_p.txt"
+notp_file="hosts_4th_not_p.txt"
+
+> "$p_file"
+> "$notp_file"
+
+while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    fourth_char="${host:3:1}"
+    if [ "$fourth_char" = "p" ]; then
+        echo "$host" >> "$p_file"
+    else
+        echo "$host" >> "$notp_file"
+    fi
+done < "$input"
+
+echo "Done: $(wc -l < "$p_file") hosts in $p_file, $(wc -l < "$notp_file") hosts in $notp_file"

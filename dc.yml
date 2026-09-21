@@ -1,0 +1,85 @@
+- name: Datacenter | Normalise SNOW inputs
+  ansible.builtin.set_fact:
+    dc_org: "{{ snow_org | trim | upper }}"
+    dc_location: "{{ location_code_map[snow_location | trim] | default('') }}"
+  vars:
+    location_code_map:
+      Innsbrook: INB
+      TFF: RIC
+      Magnolia-a: MGA
+      Magnolia-b: MGB
+
+- name: Datacenter | Fail on unrecognised location
+  ansible.builtin.fail:
+    msg: >-
+      Unrecognised SNOW location '{{ snow_location }}'.
+      Expected Innsbrook, TFF, Magnolia-a or Magnolia-b.
+  when: dc_location == ''
+
+- name: Datacenter | Gather all datacenters with tags
+  community.vmware.vmware_datacenter_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    show_tag: true
+  register: dc_info
+
+- name: Datacenter | Show raw module output (visible with -v)
+  ansible.builtin.debug:
+    var: dc_info.datacenter_info
+    verbosity: 1
+
+- name: Datacenter | Match on org + location tags
+  ansible.builtin.set_fact:
+    dc_matches: >-
+      {{ dc_info.datacenter_info
+         | json_query('[].{name: name, tags: tags[].name}')
+         | selectattr('tags')
+         | selectattr('tags', 'contains', 'Datacenter_Org_' ~ dc_org)
+         | selectattr('tags', 'contains', 'Datacenter_Location_' ~ dc_location)
+         | map(attribute='name')
+         | list }}
+
+- name: Datacenter | GMS — narrow by instance letter from hostname suffix
+  when: dc_org == 'GMS'
+  block:
+    - name: Datacenter | GMS — derive instance letter
+      ansible.builtin.set_fact:
+        gms_instance: "{{ gms_instance_map[(snow_hostname | trim)[-3:-1]] | default('') }}"
+      vars:
+        gms_instance_map: { '10': A, '20': B, '30': C, '40': D }
+
+    - name: Datacenter | GMS — fail on unrecognised suffix
+      ansible.builtin.fail:
+        msg: "GMS hostname '{{ snow_hostname }}' must end in 10V, 20V, 30V or 40V."
+      when: gms_instance == ''
+
+    - name: Datacenter | GMS — keep the datacenter carrying that letter
+      ansible.builtin.set_fact:
+        dc_matches: "{{ dc_matches | select('search', '-' ~ gms_instance ~ '-') | list }}"
+
+- name: Datacenter | Fail — no match
+  ansible.builtin.fail:
+    msg: >-
+      No datacenter tagged Datacenter_Org_{{ dc_org }} +
+      Datacenter_Location_{{ dc_location }}
+      {%- if dc_org == 'GMS' %} with instance {{ gms_instance }}.
+      Check the hostname suffix belongs to {{ snow_location }}
+      (10/20 = TFF, 30/40 = Innsbrook){% endif %}.
+  when: dc_matches | length == 0
+
+- name: Datacenter | Fail — ambiguous match
+  ansible.builtin.fail:
+    msg: >-
+      {{ dc_matches | length }} datacenters matched org {{ dc_org }}
+      at {{ dc_location }}: {{ dc_matches | join(', ') }}.
+      Expected exactly one — check datacenter tags.
+  when: dc_matches | length > 1
+
+- name: Datacenter | Set result
+  ansible.builtin.set_fact:
+    target_datacenter: "{{ dc_matches | first }}"
+
+- name: Datacenter | Report
+  ansible.builtin.debug:
+    msg: "{{ dc_org }} / {{ snow_location }} → {{ target_datacenter }}"

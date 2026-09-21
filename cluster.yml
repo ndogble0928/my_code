@@ -1,0 +1,66 @@
+
+    # ═══════════════════════════════════════════════════════════════
+    # CLUSTER — inside target_datacenter, environment + OS with fallback
+    # ═══════════════════════════════════════════════════════════════
+ 
+    - name: Cluster | Build the environment fallback ladder
+      ansible.builtin.set_fact:
+        cl_env_ladder: "{{ env_ladders[snow_environment] }}"
+      vars:
+        env_ladders:
+          Prod: [Prod, Default]
+          QA:   [QA, NonProd, Default]
+          Dev:  [Dev, NonProd, Default]
+          Test: [NonProd, QA, Default]
+ 
+    - name: Cluster | Gather clusters in {{ target_datacenter }} with tags
+      community.vmware.vmware_cluster_info:
+        datacenter: "{{ target_datacenter }}"
+        show_tag: true
+      register: cl_info
+ 
+    - name: Cluster | Show raw module output (visible with -v)
+      ansible.builtin.debug:
+        var: cl_info.clusters
+        verbosity: 1
+ 
+    - name: Cluster | Flatten to name + tag names, drop untagged
+      ansible.builtin.set_fact:
+        cl_map: >-
+          {{ cl_info.clusters | dict2items
+             | json_query('[].{name: key, tags: value.tags[].name}')
+             | selectattr('tags') | list }}
+        cl_matches: []
+ 
+    - name: Cluster | Try each tier in priority order until one matches
+      ansible.builtin.set_fact:
+        cl_matches: >-
+          {{ cl_map
+             | selectattr('tags', 'contains', 'Cluster_Environment_' ~ item.0)
+             | selectattr('tags', 'contains', 'Cluster_OS_' ~ item.1)
+             | map(attribute='name') | list }}
+        cl_tier: "{{ item.0 }} / {{ item.1 }}"
+      loop: "{{ cl_env_ladder | product([in_os, 'Default']) | list }}"
+      loop_control:
+        label: "env={{ item.0 }} os={{ item.1 }}"
+      when: cl_matches | length == 0
+ 
+    - name: Cluster | Fail — no match
+      ansible.builtin.fail:
+        msg: >-
+          No cluster in {{ target_datacenter }} tagged for
+          environment {{ snow_environment }} (tried {{ cl_env_ladder | join(', ') }})
+          and OS {{ in_os }} (or Default).
+      when: cl_matches | length == 0
+ 
+    - name: Cluster | Fail — ambiguous match
+      ansible.builtin.fail:
+        msg: >-
+          {{ cl_matches | length }} clusters in {{ target_datacenter }} matched
+          tier {{ cl_tier }}: {{ cl_matches | join(', ') }}.
+          Expected exactly one — check cluster tags.
+      when: cl_matches | length > 1
+ 
+    - name: Cluster | Set result
+      ansible.builtin.set_fact:
+        target_cluster: "{{ cl_matches | first }}"

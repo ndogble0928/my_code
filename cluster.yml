@@ -107,15 +107,19 @@
              | selectattr('tags', 'contains', 'Datastore_Placement_Build')
              | list }}
  
-    - name: Datastore | Collapse members to their parent pod
+    - name: Datastore | Record each datastore's target (parent pod, or itself if standalone)
       ansible.builtin.set_fact:
         ds_targets: >-
-          {%- set out = [] -%}
-          {%- for d in ds_build -%}
-            {%- set in_pod = d.pod is string and d.pod not in ['', 'N/A'] -%}
-            {%- set _ = out.append(d.pod if in_pod else d.name) -%}
-          {%- endfor -%}
-          {{ out | unique | list }}
+          {{ ds_targets + [item.pod
+                           if (item.pod is string and item.pod not in ['', 'N/A'])
+                           else item.name] }}
+      loop: "{{ ds_build }}"
+      loop_control:
+        label: "{{ item.name }}"
+ 
+    - name: Datastore | Remove duplicate targets
+      ansible.builtin.set_fact:
+        ds_targets: "{{ ds_targets | unique }}"
  
     - name: Datastore | Fail — no match
       ansible.builtin.fail:

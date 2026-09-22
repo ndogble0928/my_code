@@ -1,0 +1,47 @@
+What is the "read-only mount" and what does it do?
+It's the DES_Compliance_Logs share mounted on the two SFTP servers so AAP can read the weekly log files. After a conversation with Trevor, I confirmed the mount is currently read-write, meaning the service account can read and write to the share. If the Found/Not Found reports are stored back on the share, write access is required. Otherwise, we can request read-only access, since the automation only needs to read the log files. I'll update the slide accordingly.
+What is 10.43.2.142?
+The file server hosting the share .
+Who has access to DES_Compliance_Logs? Any need-to-know concerns?
+I'm reaching out to the storage team to get you an answer.
+How is the transfer from Splunk to Folder A being done?
+The automation doesn't handle that transfer. It only reads the log files once they're stored on the DES_Compliance_Logs share, via the mount on the SFTP servers.
+Validate device names ERT → Archer
+An ArcherSync (True/False) field has been added to the SharePoint asset lists, and device names are pulled only when it's set to True. Work is underway to make sure the right devices have the field set.
+What is pulling the data from SP?
+CS Ansible Automation Platform, via the SharePoint Graph API, using an app registration client ID/secret.
+Is this box a duplicate?
+Yes. I'll remove it.
+Resolution/follow-up for missing devices?
+The automation doesn't resolve missing devices. It produces a report of missing devices, emailed per device type.
+What permissions do Splunk and Syslog have?
+The automation doesn't target Splunk or Syslog.
+Archer datafeed discrepancies
+@Christy M Campos, could you please advise?
+Splunk → Syslog → Folder A steps
+Out of scope. The automation doesn't handle that transfer.
+Error handling and follow-up process for a fix
+A subsequent process for a fix can be included in phase 2 of the project.
+
+Additional notes:
+
+Overall, the automation pulls the device lists from Archer and SharePoint and checks the weekly log files on the compliance logs share to confirm every device logged. If a device is missing, it produces a report. How the logs are produced or transferred to the share is outside the scope of this automation.
+
+Thanks,
+Nico
+
+
+Subject: Access Inquiry: 
+
+Hi team,
+
+We're building an automated NERC CIP log validation process that reads weekly log review files from the  share. As part of the compliance review, we've been asked to confirm who has access to this share.
+
+Could you please provide:
+- The list of users and groups with access to DES_Compliance_Logs
+- The permission level for each (read, write, full control)
+
+This is needed to address any "need to know" concerns for the CIP compliance review.
+
+Thanks,
+Nico

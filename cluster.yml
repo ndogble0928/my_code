@@ -72,3 +72,66 @@
     - name: Cluster | Set result
       ansible.builtin.set_fact:
         target_cluster: "{{ cl_matches | first }}"
+
+    # ═══════════════════════════════════════════════════════════════
+    # DATASTORE — scoped to target_cluster, filtered by one build tag
+    #
+    # Scoping to the cluster already settles environment and OS: a
+    # cluster only sees the storage mounted to its hosts. The tag just
+    # separates general build storage from local / special-purpose LUNs.
+    #
+    # Datastore clusters (-DSC) cannot be tag-read by community.vmware,
+    # so the tag sits on their MEMBER datastores. Output is the parent
+    # pod name when the match is in a pod, else the datastore name —
+    # both forms are accepted by create_vm's datastore.yml.j2.
+    # ═══════════════════════════════════════════════════════════════
+ 
+    - name: Datastore | Gather datastores visible to {{ target_cluster }} with tags
+      community.vmware.vmware_datastore_info:
+        datacenter: "{{ target_datacenter }}"
+        cluster: "{{ target_cluster }}"
+        show_tag: true
+      register: ds_info
+ 
+    - name: Datastore | Show raw module output (visible with -v)
+      ansible.builtin.debug:
+        var: ds_info.datastores
+        verbosity: 1
+ 
+    - name: Datastore | Keep only datastores tagged for builds
+      ansible.builtin.set_fact:
+        ds_build: >-
+          {{ ds_info.datastores
+             | json_query('[].{name: name, pod: datastore_cluster, tags: tags[].name}')
+             | selectattr('tags')
+             | selectattr('tags', 'contains', 'Datastore_Placement_Build')
+             | list }}
+ 
+    - name: Datastore | Collapse members to their parent pod
+      ansible.builtin.set_fact:
+        ds_targets: >-
+          {%- set out = [] -%}
+          {%- for d in ds_build -%}
+            {%- set in_pod = d.pod is string and d.pod not in ['', 'N/A'] -%}
+            {%- set _ = out.append(d.pod if in_pod else d.name) -%}
+          {%- endfor -%}
+          {{ out | unique | list }}
+ 
+    - name: Datastore | Fail — no match
+      ansible.builtin.fail:
+        msg: >-
+          No datastore tagged Datastore_Placement_Build is visible to
+          cluster {{ target_cluster }} in {{ target_datacenter }}.
+      when: ds_targets | length == 0
+ 
+    - name: Datastore | Fail — ambiguous match
+      ansible.builtin.fail:
+        msg: >-
+          Cluster {{ target_cluster }} sees {{ ds_targets | length }} build
+          targets: {{ ds_targets | join(', ') }}. Expected exactly one —
+          either untag the extra storage or add environment/OS tags.
+      when: ds_targets | length > 1
+ 
+    - name: Datastore | Set result
+      ansible.builtin.set_fact:
+        target_datastore: "{{ ds_targets | first }}"

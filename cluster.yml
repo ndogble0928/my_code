@@ -2,7 +2,15 @@
     # ═══════════════════════════════════════════════════════════════
     # CLUSTER — inside target_datacenter, environment + OS with fallback
     # ═══════════════════════════════════════════════════════════════
- 
+    - name: Inputs | Normalise SNOW values to tag codes
+    ansible.builtin.set_fact:
+    in_org: "{{ snow_org | trim | upper }}"
+    in_location: "{{ location_map[snow_location | trim] | default('') }}"
+    in_os: >-
+      {{ 'Linux'   if (snow_os_variant | trim | lower) is match('rhel')
+         else ('Windows' if (snow_os_variant | trim | lower) is match('windows')
+         else '') }}
+    
     - name: Cluster | Build the environment fallback ladder
       ansible.builtin.set_fact:
         cl_env_ladder: "{{ env_ladders[snow_environment] }}"

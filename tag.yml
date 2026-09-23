@@ -266,3 +266,87 @@
           - "  Datastore  : {{ target_datastore }}  ({{ target_datastore_kind }})  [fallback: {{ ds_fallback_level }}]"
           - "  Folder     : {{ target_folder }}{{ '  [NO MATCH — ROOT]' if folder_used_root | bool else '' }}"
           - "============================================================"
+
+    # ═══════════════════════════════════════════════════════════════
+    # FOLDER — per-org naming, falls back to the datacenter root
+    #
+    # Folder tags can't be read by community.vmware, and folder names
+    # follow no shared rule, so each org's pattern is listed here.
+    # Unlisted orgs, or folders that don't exist, leave target_folder
+    # empty — create_vm then omits the folder and the VM lands at root.
+    # ═══════════════════════════════════════════════════════════════
+ 
+    - name: Folder | Build the expected folder name
+      # Convention: ORG-LOCATION-ENVIRONMENT, uppercase, directly under
+      # the datacenter's VM root. Same rule for every org.
+      ansible.builtin.set_fact:
+        folder_name: "{{ in_org }}-{{ in_location }}-{{ snow_environment | upper }}"
+ 
+    - name: Folder | Gather folders in {{ target_datacenter }}
+      community.vmware.vmware_folder_info:
+        datacenter: "{{ target_datacenter }}"
+      register: folder_info
+ 
+    - name: Folder | Work out the VM root and whether the folder already exists
+      ansible.builtin.set_fact:
+        # The datacenter's VM root, e.g. /CS/CS-INB/vm — the shortest path
+        # ending in /vm, since datacenters can sit inside folders.
+        folder_vm_root: >-
+          {{ folder_info.flat_folder_info
+             | map(attribute='path')
+             | select('search', '/vm$')
+             | sort | first | default('') }}
+ 
+    - name: Folder | Record the full path we expect
+      ansible.builtin.set_fact:
+        folder_path: "{{ folder_vm_root }}/{{ folder_name }}"
+        folder_exists: >-
+          {{ folder_vm_root != ''
+             and (folder_vm_root ~ '/' ~ folder_name)
+                 in (folder_info.flat_folder_info | map(attribute='path') | list) }}
+ 
+    - name: Folder | Create it when it is missing
+      # state=present is idempotent; the guard just avoids a pointless call.
+      # Set create_missing_folder=false to fall back to the datacenter root.
+      vmware.vmware.folder:
+        datacenter: "{{ target_datacenter }}"
+        relative_path: "{{ folder_name }}"
+        folder_type: vm
+        state: present
+      register: folder_created
+      when:
+        - not folder_exists | bool
+        - create_missing_folder | bool
+ 
+    - name: Folder | Set the result
+      ansible.builtin.set_fact:
+        target_folder: >-
+          {{ folder_path
+             if (folder_exists | bool or folder_created is changed)
+             else '' }}
+ 
+    - name: Folder | Warn when no folder could be used
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: folder '{{ folder_name }}' does not exist in {{ target_datacenter }}
+          and was not created — the VM will be placed at the datacenter root.
+      when: target_folder == ''
+ 
+    - name: Folder | Folder name only (in case the deploy module wants a name, not a path)
+      ansible.builtin.set_fact:
+        target_folder_name: "{{ target_folder.split('/') | last if target_folder else '' }}"
+ 
+    # ═══════════════════════════════════════════════════════════════
+    # REPORT
+    # ═══════════════════════════════════════════════════════════════
+ 
+    - name: Placement result
+      ansible.builtin.debug:
+        msg:
+          - "Inputs     : {{ snow_org }} / {{ snow_location }} / {{ snow_environment }} / {{ snow_os_variant }}"
+          - "Datacenter : {{ target_datacenter }}"
+          - "Cluster    : {{ target_cluster }}  (matched on {{ cl_tier }})"
+          - "Datastore  : {{ target_datastore }}"
+          - "Folder     : {{ target_folder if target_folder else '(datacenter root)' }}"
+
+

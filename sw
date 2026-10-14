@@ -54,3 +54,20 @@
     - C:\Program Files (x86)\SolarWinds\Agent
     - C:\ProgramData\SolarWinds\Agent
     - C:\Temp\SolarWinds-Agent
+
+----
+- name: Run setup.bat
+  ansible.windows.win_command: setup.bat
+  args:
+    chdir: C:\Temp\SolarWinds-Agent
+    creates: C:\Program Files (x86)\SolarWinds\Agent
+  register: setup_result
+  failed_when: >-
+    setup_result.rc | default(0) not in [0, 1] or
+    'has successfully been created' not in setup_result.stdout | default('')
+  changed_when: "'has successfully been created' in setup_result.stdout | default('')"
+
+- name: Reboot to trigger silent install
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: setup_result is changed

@@ -71,3 +71,28 @@
   ansible.windows.win_reboot:
     reboot_timeout: 600
   when: setup_result is changed
+
+
+----
+- name: Download and extract agent
+  ansible.builtin.unarchive:
+    src: 
+    dest: /tmp/inst
+    remote_src: true
+    creates: /tmp/inst/install.sh
+
+
+-----
+- name: Download agent bundle
+  ansible.windows.win_get_url:
+    url: "{{ swi_base_url }}/SolarWinds-Agent.zip"
+    dest: C:\Temp\SolarWinds-Agent.zip
+    checksum: "{{ swi_zip_sha256 }}"
+    checksum_algorithm: sha256
+
+- name: Extract bundle
+  community.windows.win_unzip:
+    src: C:\Temp\SolarWinds-Agent.zip
+    dest: C:\Temp\SolarWinds-Agent
+    creates: C:\Temp\SolarWinds-Agent\setup.bat
+    delete_archive: true
